@@ -304,6 +304,7 @@ class _BaseReactor:
     def set_names(self):
         mask_species = [True] * self.num_species
         if self.name_species is not None:
+            #give bool array True if named species in partic_species
             mask_species = [name in self.partic_species
                             for name in self.name_species]
 
