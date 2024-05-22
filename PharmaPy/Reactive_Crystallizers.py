@@ -411,6 +411,109 @@ class _BaseReactiveCryst():
         heat_transf = self.u_ht * self.area_ht * (temp - temp_ht)
         return heat_transf
     
+    def nomenclature(self):
+        name_class = self.__class__.__name__
+
+        states_di = {
+            }
+
+        di_distr = {'dim': self.num_distr,
+                    'index': list(range(self.num_distr)), 'type': 'diff',
+                    'depends_on': ['time', 'x_cryst']}
+
+        if name_class != 'BatchCryst':
+            self.names_states_in += ['vol_flow', 'temp']
+
+            if self.method == 'moments':
+                self.states_in_dict['Inlet']['mu_n'] = self.num_distr
+            else:
+                self.states_in_dict['Inlet']['distrib'] = self.num_distr
+
+        if self.method == 'moments':
+            # mom_names = ['mu_%s0' % ind for ind in range(self.num_mom)]
+
+            # for mom in mom_names[::-1]:
+            self.names_states_in.insert(0, 'mu_n')
+
+            # self.states_in_dict['solid']['moments']
+
+            if name_class == 'MSMPR':
+                self.states_uo.append('moments')
+                # self.states_in_dict['Inlet']['distrib'] = self.num_distr
+
+                di_distr['units'] = 'm**n/m**3'
+                states_di['mu_n'] = di_distr
+            else:
+                self.states_uo.append('total_moments')
+
+                di_distr['units'] = 'm**n'
+                states_di['mu_n'] = di_distr
+
+                # if name_class == 'SemibatchCryst':
+                    # self.states_in_dict['Inlet']['distrib'] = self.num_distr
+
+        elif self.method == '1D-FVM':
+            self.names_states_in.insert(0, 'distrib')
+
+            states_di['distrib'] = di_distr
+
+            if name_class == 'MSMPR':
+                self.states_uo.insert(0, 'distrib')
+                di_distr['units'] = '#/m**3/um'
+
+            else:
+                self.states_uo.insert(0, 'total_distrib')
+                di_distr['units'] = '#/um'
+
+        states_di['mass_conc'] = {'dim': len(self.name_species),
+                                  'index': self.name_species,
+                                  'units': 'kg/m**3', 'type': 'diff',
+                                  'depends_on': ['time']}
+
+        if name_class != 'MSMPR':
+            states_di['vol'] = {'dim': 1, 'units': 'm**3', 'type': 'diff',
+                                'depends_on': ['time']}
+            self.states_uo.append('vol')
+
+        if self.adiabatic:
+            self.states_uo.append('temp')
+
+            states_di['temp'] = {'dim': 1, 'units': 'K', 'type': 'diff',
+                                 'depends_on': ['time']}
+        elif 'temp' not in self.controls:
+            self.states_uo += ['temp', 'temp_ht']
+
+            states_di['temp'] = {'dim': 1, 'units': 'K', 'type': 'diff',
+                                 'depends_on': ['time']}
+            states_di['temp_ht'] = {'dim': 1, 'units': 'K', 'type': 'diff',
+                                    'depends_on': ['time']}
+
+        self.states_in_phaseid = {'mass_conc': 'Liquid_1'}
+        self.names_states_out = self.names_states_in
+
+        self.states_di = states_di
+        self.dim_states = [di['dim'] for di in self.states_di.values()]
+        self.name_states = list(self.states_di.keys())
+
+        self.fstates_di = {
+            'supersat': {'dim': 1, 'units': 'kg/m**3'},
+            'solubility': {'dim': 1, 'units': 'kg/m**3'}
+            }
+
+        if 'temp' in self.controls:
+            self.fstates_di['temp'] = {'dim': 1, 'units': 'K'}
+
+        if self.method != 'moments':
+            self.fstates_di['mu_n'] = {'dim': 4, 'index': list(range(4)),
+                                       'units': 'm**n'}
+
+            self.fstates_di['vol_distrib'] = {
+                'dim': self.num_distr,
+                'index': list(range(self.num_distr)),
+                'units': 'm**3/m**3'}
+
+    
+
     def get_inputs(self, time):
         ##r
         inlet = getattr(self, 'Inlet', None)
