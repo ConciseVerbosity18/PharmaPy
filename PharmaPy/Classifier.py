@@ -147,6 +147,9 @@ class Classifier():
 
         classes = {}
         for key in chosen_classes:
+            if key.lower() == 'all':
+                classes[key] = list(self.alltrays.keys())
+                continue
             try:
                 classes[key] = self.allclasses[key] #list of tray sizes
             except KeyError:
@@ -162,6 +165,7 @@ class Classifier():
         chosen_classes= [str(v) for v in chosen_classes]
         results = {str(cl):None for cl in chosen_classes}
         classes,classes_inv = self.get_classes(chosen_classes) 
+        
         for i,cl in enumerate(chosen_classes):
             sizes,trays,trays_inv = self.get_trays(classes[str(cl)])
             result = {tray:0 for tray in trays.keys()}
@@ -174,6 +178,15 @@ class Classifier():
             
             results[str(cl)] = result
         return results
+    
+    def diagnose(self,verbose = 1):
+        results = self.run(['all'])['all']
+        if verbose>1:
+            print(results)
+        result2 = {key:val for key,val in results.items() if val <.99}
+        if verbose ==1:
+            print(result2)
+        return result2
     
     def inbetween(self, value:float,listed_tol:list,tol:float=1e-4)->bool:
 

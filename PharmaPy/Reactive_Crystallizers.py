@@ -37,9 +37,9 @@ eps = np.finfo(float).eps
 
 
 class _BaseReactiveCryst():
-    def __init__(self, mask_params, temp_ref,
+    def __init__(self,target_comp, mask_params, temp_ref,
      isothermal, reset_states, controls, h_conv, ht_mode,
-      return_sens, state_events,method,target_comp,scale,
+      return_sens, state_events,method,scale,
       vol_tank,adiabatic,rad_zero,vol_ht,basis,jac_type,
       param_wrapper):
         """ Construct a Reactive Crystallizer Object
@@ -149,7 +149,7 @@ class _BaseReactiveCryst():
 
         # ---------- Names
         # TODO need states_uo, switch to mass on rxn side and convert
-        self.states_uo_cryst = ['mass_conc'] #duplicate?
+        self.states_uo = ['mass_conc'] 
         self.names_states_in = ['mass_conc']
 
        
@@ -190,7 +190,7 @@ class _BaseReactiveCryst():
         # Names
         self.bipartite = None
         self.names_upstream = None
-        self.states_uo_reactor = ['mole_conc']
+        self.states_uo.append('mole_conc')
         self.names_states_out = ['mole_conc']
         self.states_out_dict = {}
 
@@ -326,7 +326,7 @@ class _BaseReactiveCryst():
 
             self.states_in_dict = {
                 'Liquid_1': {'mass_conc': len(self.Liquid_1.name_species)},
-                'Inlet': {'vol_flow': 1, 'temp': 1}}
+                'Inlet': {'vol_flow': 1, 'temp': 1,'mole_conc': len(self.Liquid_1.name_species)}}
 
             self.nomenclature() 
             # TODO write nomenclature or set_names
@@ -413,7 +413,7 @@ class _BaseReactiveCryst():
     
     def nomenclature(self):
         name_class = self.__class__.__name__
-
+       
         states_di = {
             }
 
@@ -421,7 +421,7 @@ class _BaseReactiveCryst():
                     'index': list(range(self.num_distr)), 'type': 'diff',
                     'depends_on': ['time', 'x_cryst']}
 
-        if name_class != 'BatchCryst':
+        if 'batch' not in name_class.lower() and 'semi' not in name_class.lower(): #batch reactive cryst
             self.names_states_in += ['vol_flow', 'temp']
 
             if self.method == 'moments':
@@ -437,7 +437,7 @@ class _BaseReactiveCryst():
 
             # self.states_in_dict['solid']['moments']
 
-            if name_class == 'MSMPR':
+            if 'msmpr' in name_class.lower():
                 self.states_uo.append('moments')
                 # self.states_in_dict['Inlet']['distrib'] = self.num_distr
 
@@ -469,8 +469,8 @@ class _BaseReactiveCryst():
                                   'index': self.name_species,
                                   'units': 'kg/m**3', 'type': 'diff',
                                   'depends_on': ['time']}
-
-        if name_class != 'MSMPR':
+         
+        if 'msmpr' not in name_class.lower():
             states_di['vol'] = {'dim': 1, 'units': 'm**3', 'type': 'diff',
                                 'depends_on': ['time']}
             self.states_uo.append('vol')
@@ -497,7 +497,9 @@ class _BaseReactiveCryst():
 
         self.fstates_di = {
             'supersat': {'dim': 1, 'units': 'kg/m**3'},
-            'solubility': {'dim': 1, 'units': 'kg/m**3'}
+            'solubility': {'dim': 1, 'units': 'kg/m**3'},
+            'q_rxn': {'units': 'W', 'dim': 1},
+            'q_ht': {'units': 'W', 'dim': 1}
             }
 
         if 'temp' in self.controls:
@@ -512,7 +514,25 @@ class _BaseReactiveCryst():
                 'index': list(range(self.num_distr)),
                 'units': 'm**3/m**3'}
 
-    
+        ## ------reactor set_names implementation
+        mask_species = [True] * self.num_species
+        if self.name_species is not None:
+            mask_species = [name in self.partic_species for name in self.name_species]
+        self.mask_species = np.asarray(mask_species)
+        index_conc = self.RxnKinetics.partic_species if 'batch' in name_class.lower()\
+                    and 'semi' not in name_class.lower() else self.name_species
+        
+        states_di['mole_conc']= {'index': index_conc, 'dim': len(index_conc),
+                          'units': 'mol/L', 'type': 'diff'}
+        if self.isothermal:
+            self.fstates_di['temp'] = {'units': 'K', 'dim': 1, 'type': 'diff'}
+        else:
+            self.states_di['temp'] = {'units': 'K', 'dim': 1, 'type': 'diff'}
+            if 'plugflow' not in name_class.lower():
+                self.states_di['temp_ht'] = {'units': 'K', 'dim': 1,
+                                             'type': 'diff'}
+
+        ## end set_names implementation
 
     def get_inputs(self, time):
         ##r
@@ -560,7 +580,7 @@ class _BaseReactiveCryst():
             rhos = rhos_susp
             h_in = None
             phis_in = None
-        elif name_unit == 'SemibatchRC' or name_unit == 'RMSMPR':
+        elif 'semi' in name_unit.lower() or 'msmpr' in name_unit.lower():
             inlet_temp = u_input['Inlet']['temp']
 
             if self.Inlet.__module__ == 'PharmaPy.MixedPhases':
@@ -657,7 +677,7 @@ class _BaseReactiveCryst():
 
         mu_2 = moms[2]
         #assumes solid1 is target
-        kv_cry = self.Solid_1.kv
+        kv_cry = self.Solid_1.kv # volumetric shape factor
 
         # Kinetic terms
         if self.basis == 'mass_frac':
@@ -674,10 +694,9 @@ class _BaseReactiveCryst():
         impurity_factor = self.CrystKinetics.alpha_fn(conc)
         growth = growth * impurity_factor  # um/s 
 
-        dissol = dissol  # um/s
-
-        boundary_cond = nucl / (growth + eps) # num/um or num/um/m**3
-        f_aug = np.concatenate(([boundary_cond]*2, csd, [csd[-1]]))
+        # dissol = dissol  # um/s
+        boundary_cond = nucl / (growth + eps) # num/um or num/um/m**3 initial
+        f_aug = np.concatenate(([boundary_cond]*2, csd, [csd[-1]])) # TODO adjust for reaction or handled by concentration? 
 
         # Flux source terms
         f_diff = np.diff(f_aug)
@@ -706,6 +725,8 @@ class _BaseReactiveCryst():
             dcsd_dt = -np.diff(flux) / self.dx
 
             # Material bce in kg_API/s --> G in um, mu_2 in m**2 (or m**2/m**3)
+            # AKA R_v (rho_c*kv*d_mu3_d_t)
+            # Handle stoich in material balance
             mass_transfer = rho_cry * kv_cry * (
                 3*(growth + dissol)*mu_2 + nucl*self.rad**3) * (1e-6)
             return dcsd_dt, np.array(mass_transfer)
@@ -1030,6 +1051,111 @@ class _BaseReactiveCryst():
 
 
 
+
+class ReactiveMSMPR(_BaseReactiveCryst):
+    """
+    Assumes:
+        constant volume
+        constant solid density
+        metric units
+        
+    """
+    def __init__(self, target_comp, mask_params=None, temp_ref=298.15, isothermal=True,
+                  reset_states=False, controls=None, h_conv=1000, ht_mode='jacket',
+                  return_sens=True, state_events=None, method='1D-FVM',
+                  scale=1, vol_tank=None, adiabatic=False, rad_zero=0, vol_ht=None,
+                  basis='mass_conc', jac_type=None, param_wrapper=None, num_interp_points=3):
+        super().__init__(mask_params, temp_ref, isothermal, reset_states, controls, h_conv, ht_mode, return_sens, state_events, method, target_comp, scale, vol_tank, adiabatic, rad_zero, vol_ht, basis, jac_type, param_wrapper)
+        self.is_continuous = True
+        self.oper_mode = 'Continuous'
+        self._Inlet = None
+        self.vol_offset = 0.75
+        self.num_interp_points = num_interp_points
+
+    @property
+    def Inlet(self):
+        return self._Inlet
+
+    @Inlet.setter
+    def Inlet(self, inlet_object):
+        self._Inlet = inlet_object
+        self._Inlet.num_interpolation_points = self.num_interp_points
+
+    def _get_tau(self):
+        time_upstream = getattr(self.Inlet, 'time_upstream', None)
+        if time_upstream is None:
+            time_upstream = [0]
+
+        inputs = self.get_inputs(time_upstream[-1])
+
+        volflow_in = inputs['Inlet']['vol_flow']
+        tau = self.Liquid_1.vol / volflow_in
+
+        self.tau = tau
+        return tau
+    # TODO solve_steady_state
+
+    def material_balances(self, time, params, u_inputs, rhos, mu_n,
+                          distrib, mass_conc, mole_conc, temp, temp_ht, vol, phi_in):
+
+        rho_sol = rhos[0][1]
+
+        input_flow = u_inputs['Inlet']['vol_flow']
+
+        input_conc = u_inputs['Liquid_1']['mass_conc']
+        input_mole = u_inputs['Inlet']['mole_conc']
+
+        if self.method == 'moments':
+            input_distrib = u_inputs['Inlet']['mu_n'] * (1e6)**np.arange(self.num_distr)#* self.scale
+            ddistr_dt, transf = self.method_of_moments(distrib, mass_conc, temp,
+                                                       params, rho_sol)
+        elif self.method == '1D-FVM':
+            input_distrib = u_inputs['Inlet']['distrib'] * self.scale
+            ddistr_dt, transf = self.fvm_method(distrib, mu_n, mass_conc, temp,
+                                                params, rho_sol)
+
+            self.Solid_1.moments[[2, 3]] = mu_n[[2, 3]]
+        ## Reactive terms:
+        if self.RxnKinetics.keq_params is None:
+            rate = self.RxnKinetics.get_rxn_rates(mole_conc[self.mask_species],temp)
+        else:
+            deltah_rxn = self.Liquid_1.getHeatOfRxn(temp,
+                                                    self.Kinetics.tref_hrxn)
+
+            rate = self.RxnKinetics.get_rxn_rates(mole_conc[self.mask_species],
+                                               temp,
+                                               deltah_rxn)
+        rates = np.zeros_like(mole_conc)
+        rates[self.mask_species] = rate
+        # ---------- Add flow terms
+        # Distribution
+        tau_inv = input_flow / vol #theta in many nomenclatures
+        flow_distrib = tau_inv * (input_distrib - distrib)
+
+        ddistr_dt = ddistr_dt + flow_distrib
+        # Liquid phase
+        phi = 1 - self.Solid_1.kv * mu_n[3] #epsilon in documentation
+
+        c_tank = mass_conc
+        # Re derive MSMPR to match basis and add reaction here
+        #check how handle multiple species (if not array follows)
+        # check how incorporate stoichs
+        # check if need stoichs in mom
+        # check if handles multiple cryst species # needed
+        
+        flow_term = tau_inv * (input_conc*phi_in[0] - c_tank*phi) #check phi_in[0] or just phi_in
+        transf_term = transf * (self.kron_jtg - c_tank / rho_sol)
+        
+        rxn_term = rates*self.Liquid_1.mw*1000 #calc R as moles convert to mass (mol/L to kg/m3)
+        dcomp_dt = 1 / phi * (flow_term - transf_term + rxn_term)
+
+        if self.basis == 'mass_frac':
+            rho_liq = self.Liquid_1.getDensity()
+            dcomp_dt *= 1 / rho_liq
+
+        dmaterial_dt = np.concatenate((ddistr_dt, dcomp_dt))
+
+        return dmaterial_dt, transf
 
 class SemibatchRC(_BaseReactiveCryst):
     pass
