@@ -441,6 +441,97 @@ class _BaseCryst:
             inputs = get_inputs_new(time, self.Inlet, self.states_in_dict)
 
         return inputs
+
+    def method_of_moments(self, mu, conc, temp, params, rho_cry, vol=1):
+        kv = self.Solid_1.kv
+
+        # Kinetics
+        if self.basis == 'mass_frac':
+            rho_liq = self.Liquid_1.getDensity()
+            comp_kin = conc / rho_liq
+        else:
+            comp_kin = conc
+
+        # Kinetic terms
+        mu_susp = mu*(1e-6)**np.arange(self.num_distr) / vol  # m**n/m**3_susp
+        nucl, growth, dissol = self.CrystKinetics.get_kinetics(comp_kin, temp, kv,
+                                                          mu_susp)
+
+        growth = growth * self.CrystKinetics.alpha_fn(conc)
+
+        ind_mom = np.arange(1, len(mu))
+
+        # Model
+        dmu_zero_dt = np.atleast_1d(nucl * vol)
+        dmu_1on_dt = ind_mom * (growth + dissol) * mu[:-1] + \
+            nucl * self.rad**ind_mom
+        dmu_dt = np.concatenate((dmu_zero_dt, dmu_1on_dt))
+
+        # Material balance in kg_API/s --> G in um, u_2 in um**2 (or m**2/m**3)
+        mass_transf = np.atleast_1d(rho_cry * kv * (
+            3*(growth + dissol)*mu[2] + nucl*self.rad**3)) * (1e-6)**3
+
+        return dmu_dt, mass_transf
+
+    def fvm_method(self, csd, moms, conc, temp, params, rho_cry,
+                   output='dstates', vol=1):
+
+        mu_2 = moms[2]
+
+        kv_cry = self.Solid_1.kv
+
+        # Kinetic terms
+        if self.basis == 'mass_frac':
+            rho_liq = self.Liquid_1.getDensity()
+            comp_kin = conc / rho_liq
+        else:
+            comp_kin = conc
+
+        nucl, growth, dissol = self.CrystKinetics.get_kinetics(comp_kin, temp,
+                                                          kv_cry, moms)
+
+        nucl = nucl * self.scale * vol
+
+        impurity_factor = self.CrystKinetics.alpha_fn(conc)
+        growth = growth * impurity_factor  # um/s
+
+        dissol = dissol  # um/s
+
+        boundary_cond = nucl / (growth + eps) # num/um or num/um/m**3
+        f_aug = np.concatenate(([boundary_cond]*2, csd, [csd[-1]]))
+
+        # Flux source terms
+        f_diff = np.diff(f_aug)
+        # f_diff[f_diff == 0] = eps  # avoid division by zero for theta
+
+        if growth > 0:
+            theta = f_diff[:-1] / (f_diff[1:] + eps*10)
+            # theta = f_diff[:-1] / (f_diff[1:] + eps)
+            # theta = f_diff[:-1] / f_diff[1:]
+        else:
+            theta = f_diff[1:] / (f_diff[:-1] + eps*10)
+            # theta = f_diff[:-1] / (f_diff[1:] + eps)
+            # theta = f_diff[:-1] / f_diff[1:]
+        # Van-Leer limiter
+        limiter = np.zeros_like(f_diff)
+        limiter[:-1] = (np.abs(theta) + theta) / (1 + np.abs(theta))
+
+        growth_term = growth * (f_aug[1:-1] + 0.5 * f_diff[1:] * limiter[:-1])
+        dissol_term = dissol * (f_aug[2:] - 0.5 * f_diff[1:] * limiter[1:])
+
+        flux = growth_term + dissol_term
+
+        if output == 'flux':
+            return flux  # TODO: isn't it necessary to divide by dx?
+        elif 'dstates':
+            dcsd_dt = -np.diff(flux) / self.dx
+
+            # Material bce in kg_API/s --> G in um, mu_2 in m**2 (or m**2/m**3)
+            mass_transfer = rho_cry * kv_cry * (
+                3*(growth + dissol)*mu_2 + nucl*self.rad**3) * (1e-6)
+
+            return dcsd_dt, np.array(mass_transfer)
+
     def unit_model(self, time, states, params=None, sw=None,
                     mat_bce=False, enrgy_bce=False):
 
@@ -537,97 +628,6 @@ class _BaseCryst:
 
             return balances
 
-    def method_of_moments(self, mu, conc, temp, params, rho_cry, vol=1):
-        kv = self.Solid_1.kv
-
-        # Kinetics
-        if self.basis == 'mass_frac':
-            rho_liq = self.Liquid_1.getDensity()
-            comp_kin = conc / rho_liq
-        else:
-            comp_kin = conc
-
-        # Kinetic terms
-        mu_susp = mu*(1e-6)**np.arange(self.num_distr) / vol  # m**n/m**3_susp
-        nucl, growth, dissol = self.CrystKinetics.get_kinetics(comp_kin, temp, kv,
-                                                          mu_susp)
-
-        growth = growth * self.CrystKinetics.alpha_fn(conc)
-
-        ind_mom = np.arange(1, len(mu))
-
-        # Model
-        dmu_zero_dt = np.atleast_1d(nucl * vol)
-        dmu_1on_dt = ind_mom * (growth + dissol) * mu[:-1] + \
-            nucl * self.rad**ind_mom
-        dmu_dt = np.concatenate((dmu_zero_dt, dmu_1on_dt))
-
-        # Material balance in kg_API/s --> G in um, u_2 in um**2 (or m**2/m**3)
-        mass_transf = np.atleast_1d(rho_cry * kv * (
-            3*(growth + dissol)*mu[2] + nucl*self.rad**3)) * (1e-6)**3
-
-        return dmu_dt, mass_transf
-
-    def fvm_method(self, csd, moms, conc, temp, params, rho_cry,
-                   output='dstates', vol=1):
-
-        mu_2 = moms[2]
-
-        kv_cry = self.Solid_1.kv
-
-        # Kinetic terms
-        if self.basis == 'mass_frac':
-            rho_liq = self.Liquid_1.getDensity()
-            comp_kin = conc / rho_liq
-        else:
-            comp_kin = conc
-
-        nucl, growth, dissol = self.CrystKinetics.get_kinetics(comp_kin, temp,
-                                                          kv_cry, moms)
-
-        nucl = nucl * self.scale * vol
-
-        impurity_factor = self.CrystKinetics.alpha_fn(conc)
-        growth = growth * impurity_factor  # um/s
-
-        dissol = dissol  # um/s
-
-        boundary_cond = nucl / (growth + eps) # num/um or num/um/m**3
-        f_aug = np.concatenate(([boundary_cond]*2, csd, [csd[-1]]))
-
-        # Flux source terms
-        f_diff = np.diff(f_aug)
-        f_diff[f_diff == 0] = eps  # avoid division by zero for theta
-
-        if growth > 0:
-            # theta = f_diff[:-1] / (f_diff[1:] + eps*10)
-            # theta = f_diff[:-1] / (f_diff[1:] + eps)
-            theta = f_diff[:-1] / f_diff[1:]
-        else:
-            # theta = f_diff[1:] / (f_diff[:-1] + eps*10)
-            # theta = f_diff[:-1] / (f_diff[1:] + eps)
-            theta = f_diff[:-1] / f_diff[1:]
-        # Van-Leer limiter
-        limiter = np.zeros_like(f_diff)
-        limiter[:-1] = (np.abs(theta) + theta) / (1 + np.abs(theta))
-
-        growth_term = growth * (f_aug[1:-1] + 0.5 * f_diff[1:] * limiter[:-1])
-        dissol_term = dissol * (f_aug[2:] - 0.5 * f_diff[1:] * limiter[1:])
-
-        flux = growth_term + dissol_term
-
-        if output == 'flux':
-            return flux  # TODO: isn't it necessary to divide by dx?
-        elif 'dstates':
-            dcsd_dt = -np.diff(flux) / self.dx
-
-            # Material bce in kg_API/s --> G in um, mu_2 in m**2 (or m**2/m**3)
-            mass_transfer = rho_cry * kv_cry * (
-                3*(growth + dissol)*mu_2 + nucl*self.rad**3) * (1e-6)
-
-            return dcsd_dt, np.array(mass_transfer)
-
-    
     def unit_jacobians(self, time, states, sens, params, fy, v_vector):
         if sens is not None:
             jac_states = self.jac_states_fun(time, states, params)
