@@ -37,7 +37,7 @@ eps = np.finfo(float).eps
 
 
 class _BaseReactiveCryst():
-    def __init__(self,target_comp, mask_params, temp_ref,
+    def __init__(self,target_comp, mask_params_rxn,mask_params_cryst, temp_ref,
      isothermal, reset_states, controls, h_conv, ht_mode,
       return_sens, state_events,method,scale,
       vol_tank,adiabatic,rad_zero,vol_ht,basis,jac_type,
@@ -99,7 +99,6 @@ class _BaseReactiveCryst():
 
         if isothermal:
             assert adiabatic != 1, "Cannot be isothermal and adiabatic with a reaction present"
-        self.mask_params = mask_params
         
 
 
@@ -206,7 +205,8 @@ class _BaseReactiveCryst():
         # ---------- Modeling objects
         self._Phases = None
         self._RxnKinetics = None
-        self.mask_params = mask_params
+        self.mask_params_rxn = mask_params_rxn
+        self.mask_params_cryst = mask_params_cryst
 
         self.return_sens = return_sens
 
@@ -288,7 +288,7 @@ class _BaseReactiveCryst():
 
             # Names and target compounds
             self.name_species = self.Liquid_1.name_species
-
+            self.num_species = len(self.name_species)
             # Input defaults
             self.input_defaults = {
                 'distrib': np.zeros_like(self.Solid_1.distrib)}
@@ -342,15 +342,15 @@ class _BaseReactiveCryst():
         self._CrystKinetics = instance
 
         name_params = self._CrystKinetics.name_params
-        if self.mask_params is None:
-            self.mask_params = [True] * self._CrystKinetics.num_params
-            self.name_params = name_params
+        if self.mask_params_cryst is None:
+            self.mask_params_cryst = [True] * self._CrystKinetics.num_params
+            self.name_params_cryst = name_params
 
         else:
             self.name_params = [name for ind, name in enumerate(name_params)
-                                if self.mask_params[ind]]
+                                if self.mask_params_cryst[ind]]
 
-        self.mask_params = np.array(self.mask_params)
+        self.mask_params_cryst = np.array(self.mask_params_cryst)
 
     @property
     def RxnKinetics(self):
@@ -362,18 +362,18 @@ class _BaseReactiveCryst():
         self.partic_species = instance.partic_species
 
         name_params = self._RxnKinetics.name_params
-        if self.mask_params is None:
-            self.mask_params = [True] * self._RxnKinetics.num_params
-            self.name_params = name_params
+        if self.mask_params_rxn is None:
+            self.mask_params_rxn = [True] * self._RxnKinetics.num_params
+            self.name_params_rxn = name_params
 
         else:
             self.name_params = [name for ind, name in enumerate(name_params)
-                                if self.mask_params[ind]]
+                                if self.mask_params_rxn[ind]]
 
-        self.mask_params = np.array(self.mask_params)
+        self.mask_params_rxn = np.array(self.mask_params_rxn)
 
-        ind_true = np.where(self.mask_params)[0]
-        ind_false = np.where(~self.mask_params)[0]
+        ind_true = np.where(self.mask_params_rxn)[0]
+        ind_false = np.where(~self.mask_params_rxn)[0]
 
         self.params_fixed = self.RxnKinetics.concat_params()[ind_false]
 
@@ -513,16 +513,17 @@ class _BaseReactiveCryst():
                 'dim': self.num_distr,
                 'index': list(range(self.num_distr)),
                 'units': 'm**3/m**3'}
-
+    def set_names(self):
         ## ------reactor set_names implementation
+        name_class = self.__class__.__name__ #wasnt
         mask_species = [True] * self.num_species
         if self.name_species is not None:
             mask_species = [name in self.partic_species for name in self.name_species]
-        self.mask_species = np.asarray(mask_species)
+        self.mask_species = np.asarray(mask_species) #wasnt self
         index_conc = self.RxnKinetics.partic_species if 'batch' in name_class.lower()\
                     and 'semi' not in name_class.lower() else self.name_species
         
-        states_di['mole_conc']= {'index': index_conc, 'dim': len(index_conc),
+        self.states_di['mole_conc']= {'index': index_conc, 'dim': len(index_conc),
                           'units': 'mol/L', 'type': 'diff'}
         if self.isothermal:
             self.fstates_di['temp'] = {'units': 'K', 'dim': 1, 'type': 'diff'}
@@ -531,7 +532,8 @@ class _BaseReactiveCryst():
             if 'plugflow' not in name_class.lower():
                 self.states_di['temp_ht'] = {'units': 'K', 'dim': 1,
                                              'type': 'diff'}
-
+        self.dim_states = [di['dim'] for di in self.states_di.values()] #wasnt
+        self.name_states = list(self.states_di.keys()) #wasnt
         ## end set_names implementation
 
     def get_inputs(self, time):
@@ -548,7 +550,7 @@ class _BaseReactiveCryst():
                     mat_bce=False, enrgy_bce=False):
         # TODO reconcile with RC
         di_states = unpack_states(states, self.dim_states, self.name_states)
-
+        di_states['mole_conc'] = di_states['mass_conc']/self.Liquid_1.mw
         # Inputs
         u_input = self.get_inputs(time)
 
@@ -576,7 +578,7 @@ class _BaseReactiveCryst():
 
         di_states['mu_n'] = moms
 
-        if name_unit == 'BatchRC':
+        if 'batch' in name_unit.lower() and 'semi' not in name_unit.lower(): 
             rhos = rhos_susp
             h_in = None
             phis_in = None
@@ -837,8 +839,8 @@ class _BaseReactiveCryst():
                 problem = Explicit_Problem(model, states_init,
                                            t0=self.elapsed_time)
             else:
-                sw0 = [True] * len(self.state_event_list)
-                def model(time, states, sw=None):
+                sw0 = [True] * len(self.state_event_list) #switches, currently unused in unit_model
+                def model(time, states, sw=None):#equivalent to fobj in reactor
                     return self.unit_model(time, states, params_mergd, sw)
 
                 problem = Explicit_Problem(model, states_init,
@@ -889,7 +891,7 @@ class _BaseReactiveCryst():
         any_event :
             TODO
         """
-
+        self.set_names()
         if self.__class__.__name__ != 'BatchRC':
             if self.method == 'moments':
                 pass  # TODO: MSMPR MoM should be addressed?
@@ -982,8 +984,9 @@ class _BaseReactiveCryst():
             states_init = np.append(states_init, self.Liquid_1.temp)
             self.len_states += [1]
 
-        merged_params = self.CrystKinetics.concat_params()[self.mask_params]
-
+        merged_params = self.CrystKinetics.concat_params()[self.mask_params_cryst]
+        # merged_params = np.append(merged_params,self.RxnKinetics.concat_params()[self.mask_params_rxn])
+        # states_init = np.append(states_init,self.Liquid_1.mole_conc)
         # ---------- Create problem
         problem = self.set_ode_problem(eval_sens, states_init,
                                        merged_params, jac_v_prod)
@@ -1048,7 +1051,161 @@ class _BaseReactiveCryst():
         out = flatten_states(self.profiles_runs)
 
         return out
+    
+    def plot_rxn_profiles(self, pick_comp=None, **fig_kwargs):
 
+        """
+            Plot representative profiles for tank reactors. For a more flexible
+            plotting interface, see plot_function in th PharmaPy.Plotting module
+
+            Parameters
+            ----------
+            pick_comp : list of str/int, optional
+                list of components to be plotted. Each element of the list
+                can be either the name of a species (str) or the index of the
+                species (int). The default is None.
+            **fig_kwargs : keyword arguments to plt.subplots()
+                named arguments passed to the plotting functions. A yypical field
+                is 'figsize', passed as a (width, height) tuple.
+
+            Returns
+            -------
+            fig : TYPE
+                fig object.
+            ax : numpy array or array
+                ax object or array of objects.
+
+            """
+
+        if pick_comp is None:
+            states_plot = ('mass_conc', 'temp', 'q_rxn', 'q_ht')
+        else:
+            states_plot = (['mass_conc', pick_comp], 'temp', 'q_rxn', 'q_ht')
+
+        figmap = (0, 1, 2, 2)
+        ylabels = ('C_j', 'T', 'Q_rxn', 'Q_ht')
+
+        ncols = max(figmap) + 1
+
+        fig, ax = plot_function(self, states_plot, fig_map=figmap,
+                                ncols=ncols, ylabels=ylabels, **fig_kwargs)
+
+        if hasattr(self.result, 'temp_ht'):
+            ax[1].plot(self.result.time, self.result.temp_ht, '--')
+
+            ax[1].legend(('$T_{reactor}$', '$T_{ht}$'))
+
+        for axis in ax:
+            axis.xaxis.set_minor_locator(AutoMinorLocator(2))
+            axis.yaxis.set_minor_locator(AutoMinorLocator(2))
+
+        fig.tight_layout()
+
+        fig.text(0.5, 0, 'time (s)', ha='center')
+        return fig,ax
+    def plot_cryst_profiles(self, **fig_kwargs):
+        """
+
+        Parameters
+        ----------
+        fig_kwargs : keyword arguments
+            keyword arguments to be passed to the plot.subplots() method
+
+        Returns
+        -------
+        fig : TYPE
+            DESCRIPTION.
+        ax : TYPE
+            DESCRIPTION.
+
+        """
+
+        def get_mu_labels(mu_idx, msmpr=False):
+            out = []
+            for idx in mu_idx:
+                name = '$\mu_{%i}$' % idx
+
+                if idx == 0:
+                    unit = '#'
+                elif idx == 1:
+                    unit = 'm'
+                else:
+                    unit = '$\mathrm{m^{%i}}$' % idx
+
+                if msmpr:
+                    unit += ' $\mathrm{m^{-3}}$'
+
+                unit = r' (%s)' % unit
+
+                out.append(name + unit)
+
+            return out
+
+        states = [('mu_n', (0, )), 'temp', ('mass_conc', (self.target_ind,)),
+                  'supersat']
+
+        figmap = [0, 4, 5, 5]
+        ylabels = ['mu_0', 'T', 'C_j', 'sigma']
+
+        if hasattr(self.result, 'temp_ht'):
+            states.append('temp_ht')
+            figmap.append(4)
+            ylabels.append('T_{ht}')
+
+        fig_mu, ax_mu = plot_function(self, states, fig_map=figmap,
+                                nrows=3, ncols=2, ylabels=ylabels,
+                                **fig_kwargs)
+
+        ax_mu[0, 0].legend().remove()
+
+        time = self.result.time
+        moms = self.result.mu_n
+
+        is_msmpr = self.__class__.__name__ == 'MSMPR'
+        labels_moms = get_mu_labels(range(moms.shape[1]), msmpr=is_msmpr)
+
+        for ind, row in enumerate(moms[:, 1:].T):
+            ax_mu.flatten()[ind + 1].plot(time, row)
+
+        for ind, lab in enumerate(labels_moms):
+            ax_mu.flatten()[ind].set_ylabel(lab)
+
+        # Solubility
+        ax_mu[2, 1].plot(time, self.result.solubility)
+        ax_mu[2, 1].lines[1].set_color('k')
+        ax_mu[2, 1].lines[1].set_alpha(0.4)
+
+        ax_mu[2, 1].legend([self.target_comp[0], 'solubility'])
+
+        fig_mu.tight_layout()
+        return fig_mu,ax_mu
+    
+    def plot_profiles(self,pick_comp=None,fig_kwargs={}):
+        fig_rxn,ax_rxn = self.plot_rxn_profiles(pick_comp,**fig_kwargs)
+        plt.show()
+        fig_mu,ax_mu = self.plot_cryst_profiles(**fig_kwargs)
+        plt.show()
+
+    def plot_csd(self, times=(0,), logy=False, vol_based=False, **fig_kw):
+
+        if vol_based:
+            state_plot = ['vol_distrib']
+            y_lab = ('f_v', )
+        else:
+            state_plot = ['distrib']
+            y_lab = ('f', )
+
+        fig, axis = plot_distrib(self, state_plot, times=times,
+                                 x_name='x_cryst', ylabels=y_lab, legend=False,
+                                 **fig_kw)
+
+        # axis.set_xlabel('$x$ ($\mathregular{\mu m}$)')
+        axis.set_xscale('log')
+
+        fig.texts[0].remove()
+        axis.set_xlabel('$x$ ($\mathregular{\mu m}$)')
+
+        return fig, axis
 
 
 
@@ -1060,12 +1217,12 @@ class ReactiveMSMPR(_BaseReactiveCryst):
         metric units
         
     """
-    def __init__(self, target_comp, mask_params=None, temp_ref=298.15, isothermal=True,
+    def __init__(self, target_comp, mask_params_rxn=None,mask_params_cryst=None, temp_ref=298.15, isothermal=True,
                   reset_states=False, controls=None, h_conv=1000, ht_mode='jacket',
                   return_sens=True, state_events=None, method='1D-FVM',
                   scale=1, vol_tank=None, adiabatic=False, rad_zero=0, vol_ht=None,
                   basis='mass_conc', jac_type=None, param_wrapper=None, num_interp_points=3):
-        super().__init__(mask_params, temp_ref, isothermal, reset_states, controls, h_conv, ht_mode, return_sens, state_events, method, target_comp, scale, vol_tank, adiabatic, rad_zero, vol_ht, basis, jac_type, param_wrapper)
+        super().__init__(target_comp,mask_params_rxn,mask_params_cryst, temp_ref, isothermal, reset_states, controls, h_conv, ht_mode, return_sens, state_events, method, scale, vol_tank, adiabatic, rad_zero, vol_ht, basis, jac_type, param_wrapper)
         self.is_continuous = True
         self.oper_mode = 'Continuous'
         self._Inlet = None
@@ -1145,8 +1302,8 @@ class ReactiveMSMPR(_BaseReactiveCryst):
         
         flow_term = tau_inv * (input_conc*phi_in[0] - c_tank*phi) #check phi_in[0] or just phi_in
         transf_term = transf * (self.kron_jtg - c_tank / rho_sol)
-        
-        rxn_term = rates*self.Liquid_1.mw*1000 #calc R as moles convert to mass (mol/L to kg/m3)
+        # check if units right
+        rxn_term = rates*self.Liquid_1.mw#*1000 #calc rates as moles convert to mass (mol/L to kg/m3) zzz
         dcomp_dt = 1 / phi * (flow_term - transf_term + rxn_term)
 
         if self.basis == 'mass_frac':
@@ -1156,6 +1313,243 @@ class ReactiveMSMPR(_BaseReactiveCryst):
         dmaterial_dt = np.concatenate((ddistr_dt, dcomp_dt))
 
         return dmaterial_dt, transf
+    def energy_balances(self, time,params, cryst_rate, u_inputs, rhos, mu_n,
+                        distrib, mass_conc,mole_conc, temp, temp_ht, vol,
+                        h_in, heat_prof=False):
+
+        temp = np.atleast_1d(temp)
+        rho_susp, rho_in = rhos
+
+        input_flow = u_inputs['Inlet']['vol_flow']
+        input_conc = u_inputs['Inlet']['mole_conc']
+        input_temp = u_inputs['Inlet']['temp']
+        # Thermodynamic properties (basis: slurry volume)
+        phi_liq = 1 - self.Solid_1.kv * mu_n[3]
+
+        phis = [phi_liq, 1 - phi_liq]
+        h_sp = self.Slurry.getEnthalpy(temp, phis, rho_susp)
+        capacitance = self.Slurry.getCp(temp, phis, rho_susp)  # J/m**3/K
+        # Heat of rxn
+        deltah_ref = self.RxnKinetics.delta_hrxn
+        tref_dh = self.RxnKinetics.tref_hrxn
+
+        deltah_rxn = self.Liquid_1.getHeatOfRxn(
+            self.RxnKinetics.stoich_matrix, temp, self.mask_species,
+            deltah_ref, tref_dh) 
+        rates = self.RxnKinetics.get_rxn_rates(mole_conc.T[self.mask_species].T,
+                                            temp, overall_rates=False,
+                                            delta_hrxn=deltah_rxn)
+        # Renaming
+        dh_cryst = -1.46e4  # J/kg  # TODO: read this from json file
+        # dh_cryst = -self.Liquid_1.delta_fus[self.target_ind] / \
+        #     self.Liquid_1.mw[self.target_ind] * 1000  # J/kg
+
+        height_liq = vol / (np.pi/4 * self.diam_tank**2)
+        area_ht = np.pi * self.diam_tank * height_liq + self.area_base  # m**2
+
+        # Energy terms (W)
+        flow_term = input_flow * (h_in - h_sp)
+        cryst_term = dh_cryst*cryst_rate * vol
+        # TODO check units on rxn_term (need 1000?)
+        rxn_term = -(deltah_rxn * rates).sum(axis=1) * vol * 1000  # vol in L
+
+        if 'temp' in self.controls.keys():
+            ht_term = capacitance * vol  # return capacitance TODO check if works with RC
+        elif 'temp' in self.states_uo:
+            ht_term = self.u_ht*area_ht*(temp - temp_ht) if not self.isothermal else -(flow_term + rxn_term - cryst_term)
+        if heat_prof:
+            heat_components = np.hstack([cryst_term, ht_term, flow_term, rxn_term])
+            return heat_components
+        else:
+            # Balance inside the tank
+            dtemp_dt = (flow_term + rxn_term - cryst_term - ht_term) / vol / capacitance
+
+            # Balance in the jacket
+            ht_media = self.Utility.get_inputs(time)
+            flow_ht = ht_media['vol_flow']
+            tht_in = ht_media['temp_in']
+
+            cp_ht = self.Utility.cp
+            rho_ht = self.Utility.rho
+
+            vol_ht = self.vol_tank*0.14  # m**3
+
+            dtht_dt = flow_ht / vol_ht * (tht_in - temp_ht) - \
+                self.u_ht*area_ht*(temp_ht - temp) / rho_ht/vol_ht/cp_ht
+
+            return dtemp_dt, dtht_dt
+        
+    def retrieve_results(self, time, states):
+        time = np.array(time)
+
+        # ---------- Create result object
+        inputs = self.get_inputs(time)
+        volflow = inputs['Inlet']['vol_flow']
+
+        dp = unpack_states(states, self.dim_states, self.name_states)
+        # TODO check if this can be changed to dp
+        ## ----begin old
+        # dp2 = complete_dict_states(time,dp,('vol','temp'),
+        #                            self.Liquid_1, self.controls)
+        # if 'temp_ht' in self.name_states:
+        #     heat_prof = self.energy_balances(**dp, u_inputs=inputs,
+        #                                     heat_prof=True)
+        # else:
+        #     heat_prof = self.energy_balances(temp_ht=None, **dp, u_inputs=inputs,
+        #                                     heat_prof=True)
+
+        # dp2['q_rxn'] = heat_prof[:,0]
+        # dp2['q_ht'] = heat_prof[:,1]
+        ### end old
+        dp['time'] = time
+        dp['vol_flow'] = volflow
+        dp['x_cryst'] = self.x_grid
+
+        if 'temp' in self.controls:
+            control = self.controls['temp']
+            dp['temp'] = control['fun'](time, *control['args'], **control['kwargs'])
+
+        sat_conc = self.CrystKinetics.get_solubility(dp['temp'], dp['mass_conc'])
+
+        supersat = dp['mass_conc'][:, self.target_ind] - sat_conc
+
+        dp['solubility'] = sat_conc
+        dp['supersat'] = supersat
+
+        if self.method == '1D-FVM':
+            dp['distrib'] *= 1 / self.scale
+            moms = self.Solid_1.getMoments(distrib=dp['distrib'])
+            dp['mu_n'] = moms
+
+            dp['vol_distrib'] = self.Solid_1.convert_distribution(
+                num_distr=dp['distrib'])
+
+            if type(self) == ReactiveMSMPR:
+                vol_slurry = self.Slurry.vol
+                self.Solid_1.updatePhase(distrib=dp['distrib'][-1] * vol_slurry)
+
+        if self.method == 'moments':
+            dp['mu_n'] = dp['mu_n'] * (1e-6)**np.arange(self.num_distr)
+
+        if self.__class__.__name__ == 'SemibatchCryst':
+            dp['total_distrib'] = dp['distrib']
+
+        self.profiles_runs.append(dp)
+        dp = self.flatten_states()
+        self.get_heat_duty(time, states,4)  # TODO: allow for semi-batch
+        dp['q_rxn'] = self.heat_prof[:,0]
+        dp['q_ht'] = self.heat_prof[:,1]
+
+        self.outputs = dp
+
+        self.result = DynamicResult(self.states_di, self.fstates_di, **dp)
+
+        # ---------- Update phases
+
+        self.Solid_1.temp = dp['temp'][-1]
+        self.Liquid_1.temp = dp['temp'][-1]
+
+        if type(self) == ReactiveMSMPR:
+            vol_slurry = self.Slurry.vol
+            vol_liq = (1 - self.Solid_1.kv * dp['mu_n'][-1, 3]) * vol_slurry
+
+            self.Liquid_1.updatePhase(vol=vol_liq,
+                                      mass_conc=dp['mass_conc'][-1])
+            if self.method == '1D-FVM':
+                distrib_tilde = dp['distrib'][-1] * vol_slurry
+                self.Solid_1.updatePhase(distrib=distrib_tilde)
+
+                self.Slurry = Slurry()
+
+            elif self.method == 'moments':
+                self.Slurry = Slurry(moments=dp['mu_n'][-1], vol=vol_slurry)
+
+        else:
+            vol_liq = dp['vol'][-1]
+            self.Liquid_1.updatePhase(mass_conc=dp['mass_conc'][-1],
+                                  vol=dp['vol'][-1])
+            
+            rho_solid = self.Solid_1.getDensity()
+            vol_solid = dp['mu_n'][-1, 3] * self.Solid_1.kv
+            mass_solid = rho_solid*vol_solid
+
+
+            vol_slurry = vol_solid + vol_liq
+
+            if self.method == '1D-FVM':
+                distrib_tilde = dp['total_distrib'][-1]
+                self.Solid_1.updatePhase(distrib=distrib_tilde,
+                                         mass= mass_solid)
+
+                self.Slurry = Slurry()
+
+            elif self.method == 'moments':
+                pass  # TODO
+
+        self.Slurry.Phases = (self.Solid_1, self.Liquid_1)
+        self.elapsed_time = time[-1]
+
+        # ---------- Create output stream
+        path = self.Liquid_1.path_data
+
+        solid_comp = np.zeros(self.num_species)
+        solid_comp[self.target_ind] = 1
+
+        if type(self) == ReactiveMSMPR:
+            liquid_out = LiquidStream(path,
+                                      mass_conc=dp['mass_conc'][-1],
+                                      temp=dp['temp'][-1], check_input=False)
+
+            solid_out = SolidStream(path, mass_frac=solid_comp)
+
+            if isinstance(inputs['Inlet']['vol_flow'], float):
+                vol_flow = inputs['Inlet']['vol_flow']
+            else:
+                vol_flow = inputs['Inlet']['vol_flow'][-1]
+
+            if self.method == '1D-FVM':
+                # check cstr for semibatch here
+                self.Outlet = SlurryStream(
+                    vol_flow=vol_flow,
+                    x_distrib=self.x_grid,
+                    distrib=dp['distrib'][-1])
+
+            elif self.method == 'moments':
+
+                self.Outlet = SlurryStream(
+                    vol_flow=vol_flow,
+                    moments=dp['mu_n'][-1])
+
+
+        else:
+            liquid_out = copy.deepcopy(self.Liquid_1)
+            solid_out = copy.deepcopy(self.Solid_1)
+
+            self.Outlet = Slurry(vol=vol_slurry)
+
+        # self.outputs = y_outputs
+        self.Outlet.Phases = (liquid_out, solid_out)
+
+    def get_heat_duty(self, time, states,n_components=3):
+        q_heat = np.zeros((len(time), n_components))
+
+        if self.params_iter is None:
+            merged_params = self.CrystKinetics.concat_params()[self.mask_params_cryst]
+        else:
+            merged_params = self.params_iter
+
+        for ind, row in enumerate(states):
+            row = row.copy()
+            row[:self.num_distr] *= self.scale  # scale distribution
+            q_heat[ind] = self.unit_model(time[ind], row, merged_params,
+                                          enrgy_bce=True)
+
+        # q_heat[:, 0] *= -1
+        q_cryst, q_ht, flow_term, q_rxn = q_heat.T  # TODO: controlled temperature
+
+        self.heat_prof = q_heat
+        self.heat_duty = np.array([0, trapezoidal_rule(time, q_ht)])
+        self.duty_type = [0, -2]
 
 class SemibatchRC(_BaseReactiveCryst):
     pass
