@@ -546,11 +546,101 @@ class _BaseReactiveCryst():
 
         return inputs
     
+    def method_of_moments(self, mu, conc, temp, params, rho_cry, vol=1):
+        kv = self.Solid_1.kv # shape factor
+
+        # Kinetics
+        if self.basis == 'mass_frac':
+            rho_liq = self.Liquid_1.getDensity()
+            comp_kin = conc / rho_liq
+        else:
+            comp_kin = conc
+
+        # Kinetic terms
+        mu_susp = mu*(1e-6)**np.arange(self.num_distr) / vol  # m**n/m**3_susp
+        nucl, growth, dissol = self.CrystKinetics.get_kinetics(comp_kin, temp, kv,
+                                                          mu_susp)
+
+        growth = growth * self.CrystKinetics.alpha_fn(conc)
+
+        ind_mom = np.arange(1, len(mu))
+
+        # Model
+        dmu_zero_dt = np.atleast_1d(nucl * vol)
+        dmu_1on_dt = ind_mom * (growth + dissol) * mu[:-1] + \
+            nucl * self.rad**ind_mom
+        dmu_dt = np.concatenate((dmu_zero_dt, dmu_1on_dt))
+
+        # Material balance in kg_API/s --> G in um, u_2 in um**2 (or m**2/m**3)
+        mass_transf = np.atleast_1d(rho_cry * kv * (
+            3*(growth + dissol)*mu[2] + nucl*self.rad**3)) * (1e-6)**3
+
+        return dmu_dt, mass_transf
+
+    def fvm_method(self, csd, moms, conc, temp, params, rho_cry,
+                   output='dstates', vol=1):
+
+        mu_2 = moms[2]
+        #assumes solid1 is target
+        kv_cry = self.Solid_1.kv # volumetric shape factor
+
+        # Kinetic terms
+        if self.basis == 'mass_frac':
+            rho_liq = self.Liquid_1.getDensity()
+            comp_kin = conc / rho_liq
+        else:
+            comp_kin = conc
+
+        nucl, growth, dissol = self.CrystKinetics.get_kinetics(comp_kin, temp,
+                                                          kv_cry, moms)
+
+        nucl = nucl * self.scale * vol
+
+        impurity_factor = self.CrystKinetics.alpha_fn(conc)
+        growth = growth * impurity_factor  # um/s 
+
+        # dissol = dissol  # um/s
+        boundary_cond = nucl / (growth + eps) # num/um or num/um/m**3 initial
+        f_aug = np.concatenate(([boundary_cond]*2, csd, [csd[-1]])) # TODO adjust for reaction or handled by concentration? 
+
+        # Flux source terms
+        f_diff = np.diff(f_aug)
+        # f_diff[f_diff == 0] = eps  # avoid division by zero for theta
+
+        if growth > 0:
+            theta = f_diff[:-1] / (f_diff[1:] + eps*10)
+            # theta = f_diff[:-1] / (f_diff[1:] + eps)
+            # theta = f_diff[:-1] / f_diff[1:]
+        else:
+            theta = f_diff[1:] / (f_diff[:-1] + eps*10)
+            # theta = f_diff[:-1] / (f_diff[1:] + eps)
+            # theta = f_diff[:-1] / f_diff[1:]
+        # Van-Leer limiter
+        limiter = np.zeros_like(f_diff)
+        limiter[:-1] = (np.abs(theta) + theta) / (1 + np.abs(theta))
+
+        growth_term = growth * (f_aug[1:-1] + 0.5 * f_diff[1:] * limiter[:-1])
+        dissol_term = dissol * (f_aug[2:] - 0.5 * f_diff[1:] * limiter[1:])
+
+        flux = growth_term + dissol_term
+
+        if output == 'flux':
+            return flux  # TODO: isn't it necessary to divide by dx?
+        elif 'dstates':
+            dcsd_dt = -np.diff(flux) / self.dx
+
+            # Material bce in kg_API/s --> G in um, mu_2 in m**2 (or m**2/m**3)
+            # AKA R_v (rho_c*kv*d_mu3_d_t)
+            # Handle stoich in material balance
+            mass_transfer = rho_cry * kv_cry * (
+                3*(growth + dissol)*mu_2 + nucl*self.rad**3) * (1e-6)
+            return dcsd_dt, np.array(mass_transfer)
+        
     def unit_model(self, time, states, params=None, sw=None,
                     mat_bce=False, enrgy_bce=False):
         # TODO reconcile with RC
         di_states = unpack_states(states, self.dim_states, self.name_states)
-        di_states['mole_conc'] = di_states['mass_conc']/self.Liquid_1.mw
+        di_states['mole_conc'] = di_states['mass_conc']/self.Liquid_1.mw 
         # Inputs
         u_input = self.get_inputs(time)
 
@@ -559,7 +649,7 @@ class _BaseReactiveCryst():
                                         self.Slurry, self.controls)
 
         # ---------- Physical properties
-        self.Liquid_1.updatePhase(mass_conc=di_states['mass_conc'])
+        self.Liquid_1.updatePhase(mole_conc=di_states['mole_conc'])
         self.Liquid_1.temp = di_states['temp']
         self.Solid_1.temp = di_states['temp']
 
@@ -643,96 +733,7 @@ class _BaseReactiveCryst():
             return balances
         # TODO jsut fix multiple states if needed else good
     
-    def method_of_moments(self, mu, conc, temp, params, rho_cry, vol=1):
-        kv = self.Solid_1.kv # shape factor
 
-        # Kinetics
-        if self.basis == 'mass_frac':
-            rho_liq = self.Liquid_1.getDensity()
-            comp_kin = conc / rho_liq
-        else:
-            comp_kin = conc
-
-        # Kinetic terms
-        mu_susp = mu*(1e-6)**np.arange(self.num_distr) / vol  # m**n/m**3_susp
-        nucl, growth, dissol = self.CrystKinetics.get_kinetics(comp_kin, temp, kv,
-                                                          mu_susp)
-
-        growth = growth * self.CrystKinetics.alpha_fn(conc)
-
-        ind_mom = np.arange(1, len(mu))
-
-        # Model
-        dmu_zero_dt = np.atleast_1d(nucl * vol)
-        dmu_1on_dt = ind_mom * (growth + dissol) * mu[:-1] + \
-            nucl * self.rad**ind_mom
-        dmu_dt = np.concatenate((dmu_zero_dt, dmu_1on_dt))
-
-        # Material balance in kg_API/s --> G in um, u_2 in um**2 (or m**2/m**3)
-        mass_transf = np.atleast_1d(rho_cry * kv * (
-            3*(growth + dissol)*mu[2] + nucl*self.rad**3)) * (1e-6)**3
-
-        return dmu_dt, mass_transf
-
-    def fvm_method(self, csd, moms, conc, temp, params, rho_cry,
-                   output='dstates', vol=1):
-
-        mu_2 = moms[2]
-        #assumes solid1 is target
-        kv_cry = self.Solid_1.kv # volumetric shape factor
-
-        # Kinetic terms
-        if self.basis == 'mass_frac':
-            rho_liq = self.Liquid_1.getDensity()
-            comp_kin = conc / rho_liq
-        else:
-            comp_kin = conc
-
-        nucl, growth, dissol = self.CrystKinetics.get_kinetics(comp_kin, temp,
-                                                          kv_cry, moms)
-
-        nucl = nucl * self.scale * vol
-
-        impurity_factor = self.CrystKinetics.alpha_fn(conc)
-        growth = growth * impurity_factor  # um/s 
-
-        # dissol = dissol  # um/s
-        boundary_cond = nucl / (growth + eps) # num/um or num/um/m**3 initial
-        f_aug = np.concatenate(([boundary_cond]*2, csd, [csd[-1]])) # TODO adjust for reaction or handled by concentration? 
-
-        # Flux source terms
-        f_diff = np.diff(f_aug)
-        f_diff[f_diff == 0] = eps  # avoid division by zero for theta
-
-        if growth > 0:
-            # theta = f_diff[:-1] / (f_diff[1:] + eps*10)
-            # theta = f_diff[:-1] / (f_diff[1:] + eps)
-            theta = f_diff[:-1] / f_diff[1:]
-        else:
-            # theta = f_diff[1:] / (f_diff[:-1] + eps*10)
-            # theta = f_diff[:-1] / (f_diff[1:] + eps)
-            theta = f_diff[:-1] / f_diff[1:]
-        # Van-Leer limiter
-        limiter = np.zeros_like(f_diff)
-        limiter[:-1] = (np.abs(theta) + theta) / (1 + np.abs(theta))
-
-        growth_term = growth * (f_aug[1:-1] + 0.5 * f_diff[1:] * limiter[:-1])
-        dissol_term = dissol * (f_aug[2:] - 0.5 * f_diff[1:] * limiter[1:])
-
-        flux = growth_term + dissol_term
-
-        if output == 'flux':
-            return flux  # TODO: isn't it necessary to divide by dx?
-        elif 'dstates':
-            dcsd_dt = -np.diff(flux) / self.dx
-
-            # Material bce in kg_API/s --> G in um, mu_2 in m**2 (or m**2/m**3)
-            # AKA R_v (rho_c*kv*d_mu3_d_t)
-            # Handle stoich in material balance
-            mass_transfer = rho_cry * kv_cry * (
-                3*(growth + dissol)*mu_2 + nucl*self.rad**3) * (1e-6)
-            return dcsd_dt, np.array(mass_transfer)
-        
     def unit_jacobians(self, time, states, sens, params, fy, v_vector):
         if sens is not None:
             jac_states = self.jac_states_fun(time, states, params)
@@ -972,7 +973,7 @@ class _BaseReactiveCryst():
         if 'temp_ht' in self.states_uo:
 
             if len(self.profiles_runs) == 0:
-                temp_ht = self.Liquid_1.temp
+                temp_ht = self.Utility.evaluate_inputs(0)['temp_in']
             else:
                 temp_ht = self.profiles_runs[-1]['temp_ht'][-1]
 
@@ -1228,7 +1229,7 @@ class ReactiveMSMPR(_BaseReactiveCryst):
         self._Inlet = None
         self.vol_offset = 0.75
         self.num_interp_points = num_interp_points
-
+        self.mydistrib = np.zeros(500)
     @property
     def Inlet(self):
         return self._Inlet
@@ -1260,7 +1261,7 @@ class ReactiveMSMPR(_BaseReactiveCryst):
         input_flow = u_inputs['Inlet']['vol_flow']
 
         input_conc = u_inputs['Liquid_1']['mass_conc']
-        input_mole = u_inputs['Inlet']['mole_conc']
+        # input_mole = u_inputs['Inlet']['mole_conc']
 
         if self.method == 'moments':
             input_distrib = u_inputs['Inlet']['mu_n'] * (1e6)**np.arange(self.num_distr)#* self.scale
@@ -1303,7 +1304,7 @@ class ReactiveMSMPR(_BaseReactiveCryst):
         flow_term = tau_inv * (input_conc*phi_in[0] - c_tank*phi) #check phi_in[0] or just phi_in
         transf_term = transf * (self.kron_jtg - c_tank / rho_sol)
         # check if units right
-        rxn_term = rates*self.Liquid_1.mw#*1000 #calc rates as moles convert to mass (mol/L to kg/m3) zzz
+        rxn_term = rates*self.Liquid_1.mw #calc rates as moles convert to mass (mol/t to kg/t) zzz
         dcomp_dt = 1 / phi * (flow_term - transf_term + rxn_term)
 
         if self.basis == 'mass_frac':
@@ -1311,7 +1312,7 @@ class ReactiveMSMPR(_BaseReactiveCryst):
             dcomp_dt *= 1 / rho_liq
 
         dmaterial_dt = np.concatenate((ddistr_dt, dcomp_dt))
-
+        self.mydistrib = np.append(self.mydistrib,self.mydistrib[-1]+ddistr_dt).reshape(-1,500)
         return dmaterial_dt, transf
     def energy_balances(self, time,params, cryst_rate, u_inputs, rhos, mu_n,
                         distrib, mass_conc,mole_conc, temp, temp_ht, vol,
@@ -1350,8 +1351,7 @@ class ReactiveMSMPR(_BaseReactiveCryst):
         # Energy terms (W)
         flow_term = input_flow * (h_in - h_sp)
         cryst_term = dh_cryst*cryst_rate * vol
-        # TODO check units on rxn_term (need 1000?)
-        rxn_term = -(deltah_rxn * rates).sum(axis=1) * vol * 1000  # vol in L
+        rxn_term = -(deltah_rxn * rates).sum(axis=1) * vol * 1000  # mol/Ls * J/mol * vol(m3) * 1000L/m3 -> J/s
 
         if 'temp' in self.controls.keys():
             ht_term = capacitance * vol  # return capacitance TODO check if works with RC
@@ -1404,7 +1404,8 @@ class ReactiveMSMPR(_BaseReactiveCryst):
         dp['time'] = time
         dp['vol_flow'] = volflow
         dp['x_cryst'] = self.x_grid
-
+        dp['mole_conc']= dp['mass_conc']/self.Liquid_1.mw
+        
         if 'temp' in self.controls:
             control = self.controls['temp']
             dp['temp'] = control['fun'](time, *control['args'], **control['kwargs'])
@@ -1437,8 +1438,8 @@ class ReactiveMSMPR(_BaseReactiveCryst):
         self.profiles_runs.append(dp)
         dp = self.flatten_states()
         self.get_heat_duty(time, states,4)  # TODO: allow for semi-batch
-        dp['q_rxn'] = self.heat_prof[:,0]
-        dp['q_ht'] = self.heat_prof[:,1]
+        dp['q_rxn'] = self.rxn_heat_prof[:,0]
+        dp['q_ht'] = self.rxn_heat_prof[:,1]
 
         self.outputs = dp
 
@@ -1454,7 +1455,7 @@ class ReactiveMSMPR(_BaseReactiveCryst):
             vol_liq = (1 - self.Solid_1.kv * dp['mu_n'][-1, 3]) * vol_slurry
 
             self.Liquid_1.updatePhase(vol=vol_liq,
-                                      mass_conc=dp['mass_conc'][-1])
+                                      mole_conc=dp['mole_conc'][-1])
             if self.method == '1D-FVM':
                 distrib_tilde = dp['distrib'][-1] * vol_slurry
                 self.Solid_1.updatePhase(distrib=distrib_tilde)
@@ -1466,7 +1467,7 @@ class ReactiveMSMPR(_BaseReactiveCryst):
 
         else:
             vol_liq = dp['vol'][-1]
-            self.Liquid_1.updatePhase(mass_conc=dp['mass_conc'][-1],
+            self.Liquid_1.updatePhase(mole_conc=dp['mole_conc'][-1],
                                   vol=dp['vol'][-1])
             
             rho_solid = self.Solid_1.getDensity()
@@ -1497,7 +1498,7 @@ class ReactiveMSMPR(_BaseReactiveCryst):
 
         if type(self) == ReactiveMSMPR:
             liquid_out = LiquidStream(path,
-                                      mass_conc=dp['mass_conc'][-1],
+                                      mole_conc==dp['mole_conc'][-1],
                                       temp=dp['temp'][-1], check_input=False)
 
             solid_out = SolidStream(path, mass_frac=solid_comp)
@@ -1548,6 +1549,7 @@ class ReactiveMSMPR(_BaseReactiveCryst):
         q_cryst, q_ht, flow_term, q_rxn = q_heat.T  # TODO: controlled temperature
 
         self.heat_prof = q_heat
+        self.rxn_heat_prof = np.column_stack((q_rxn,-q_ht,flow_term))
         self.heat_duty = np.array([0, trapezoidal_rule(time, q_ht)])
         self.duty_type = [0, -2]
 
