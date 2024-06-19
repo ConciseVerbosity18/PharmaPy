@@ -1498,7 +1498,7 @@ class ReactiveMSMPR(_BaseReactiveCryst):
 
         if type(self) == ReactiveMSMPR:
             liquid_out = LiquidStream(path,
-                                      mole_conc==dp['mole_conc'][-1],
+                                      mass_conc=dp['mass_conc'][-1],
                                       temp=dp['temp'][-1], check_input=False)
 
             solid_out = SolidStream(path, mass_frac=solid_comp)
