@@ -978,7 +978,3 @@ class CrystKinetics:
         return dbp_dpar, dbs_dpar, dgr_dpar, ddiss_dpar, conc_sat
 
 
-class RxnCrystKinetics(RxnKinetics,CrystKinetics):
-    def __init__(self,Rxn_Kinetics,Cryst_Kinetics):
-        RxnKinetics.__init__(path, k_params, ea_params, rxn_list, stoich_matrix, partic_species, temp_ref, reformulate_kin, keq_params, params_f, delta_hrxn, tref_hrxn, kinetic_model, df_dstates, df_dtheta)
-

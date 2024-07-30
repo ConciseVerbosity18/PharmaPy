@@ -256,7 +256,7 @@ class LiquidPhase(ThermoPhysicalManager):
             else:
                 mass_frac, mole_frac, mole_conc = frac_out
 
-            mass_conc = mole_conc * self.mw  # kg / m3
+            mass_conc = mole_conc * self.mw  # kg / m3 
 
         elif self.mass_conc is not None:
             frac_out = self.mass_conc_to_frac(self.mass_conc,

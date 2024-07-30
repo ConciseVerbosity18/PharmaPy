@@ -1136,7 +1136,7 @@ class CSTR(_BaseReactor):
             pass
         else:
             def fobj(time, states): return self.unit_model(
-                time, states, merged_params)
+                time, states, merged_params) # TODO merged_params in sw spot!!
 
             problem = Explicit_Problem(fobj, states_init,
                                        t0=self.elapsed_time)

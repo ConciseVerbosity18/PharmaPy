@@ -28,6 +28,7 @@ from scipy.optimize import newton
 import copy
 import string
 import numpy as np
+import os
 
 eps = np.finfo(float).eps
 # gas_ct = 8.314  # J/mol/K
@@ -35,7 +36,31 @@ eps = np.finfo(float).eps
 
 
 
+class progress_checker():
+    def __init__(self,minh=.05, max_count = 300):
+        self.minh = minh
+        self.max_count = max_count
+        self.old_time = 0
+        self.counter = 0
+        self.watch = 500
 
+    def check(self,time):
+        if time < self.old_time+self.minh:
+            self.counter += 1
+        else:
+            self.counter = 0
+            self.old_time = time
+        if self.counter % 25 == 0 and self.counter >0:
+            print('Sticking at time: ',time)
+        # if self.counter > self.max_count:
+        #     raise Exception('Stuck')
+        if time> self.watch:
+            print(time)
+            self.watch += 500
+        
+class extractor():
+    def __init__(self):
+        pass
 class _BaseReactiveCryst():
     def __init__(self,target_comp, mask_params_rxn,mask_params_cryst, temp_ref,
      isothermal, reset_states, controls, h_conv, ht_mode,
@@ -239,11 +264,6 @@ class _BaseReactiveCryst():
         
 
         self.outputs = None
-    # TODO check that redefined kinetics account for both reaction kin and cryst kin
-    # TODO use dimensionless?
-    # TODO add material balances
-    # TODO add energy balances
-    # TODO check if names_states or states_uo should be duplicate or singular
         
 
     @property
@@ -730,6 +750,7 @@ class _BaseReactiveCryst():
 
             self.derivatives = balances
 
+            
             return balances
         # TODO jsut fix multiple states if needed else good
     
@@ -864,6 +885,7 @@ class _BaseReactiveCryst():
                                             fy, v)
 
         return problem
+    
     def solve_unit(self, runtime=None, time_grid=None,
                    eval_sens=False,
                    jac_v_prod=False, verbose=True, test=False,
@@ -1053,6 +1075,8 @@ class _BaseReactiveCryst():
 
         return out
     
+        
+
     def plot_rxn_profiles(self, pick_comp=None, **fig_kwargs):
 
         """
@@ -1077,11 +1101,10 @@ class _BaseReactiveCryst():
                 ax object or array of objects.
 
             """
-
         if pick_comp is None:
-            states_plot = ('mass_conc', 'temp', 'q_rxn', 'q_ht')
+            states_plot = ('mole_conc', 'temp', 'q_rxn', 'q_ht')
         else:
-            states_plot = (['mass_conc', pick_comp], 'temp', 'q_rxn', 'q_ht')
+            states_plot = (['mole_conc', pick_comp], 'temp', 'q_rxn', 'q_ht')
 
         figmap = (0, 1, 2, 2)
         ylabels = ('C_j', 'T', 'Q_rxn', 'Q_ht')
@@ -1181,11 +1204,22 @@ class _BaseReactiveCryst():
         fig_mu.tight_layout()
         return fig_mu,ax_mu
     
-    def plot_profiles(self,pick_comp=None,fig_kwargs={}):
+    def plot_profiles(self,pick_comp=None,directory = None,fig_kwargs={},show=True):
         fig_rxn,ax_rxn = self.plot_rxn_profiles(pick_comp,**fig_kwargs)
-        plt.show()
+        if directory is not None:
+            fig_rxn.savefig(os.path.join(directory,'rxn_profiles.png'),dpi=600)
+        if show:
+            plt.show()
+        else:
+            plt.close()
         fig_mu,ax_mu = self.plot_cryst_profiles(**fig_kwargs)
-        plt.show()
+        if directory is not None:
+            fig_mu.savefig(os.path.join(directory,'moments.png'),dpi=600)
+        if show:
+            plt.show()
+        else:
+            plt.close()        
+        return ((fig_rxn,ax_rxn),(fig_mu,ax_mu))
 
     def plot_csd(self, times=(0,), logy=False, vol_based=False, **fig_kw):
 
@@ -1222,14 +1256,16 @@ class ReactiveMSMPR(_BaseReactiveCryst):
                   reset_states=False, controls=None, h_conv=1000, ht_mode='jacket',
                   return_sens=True, state_events=None, method='1D-FVM',
                   scale=1, vol_tank=None, adiabatic=False, rad_zero=0, vol_ht=None,
-                  basis='mass_conc', jac_type=None, param_wrapper=None, num_interp_points=3):
+                  basis='mass_conc', jac_type=None, param_wrapper=None, num_interp_points=3, grid_size=500):
         super().__init__(target_comp,mask_params_rxn,mask_params_cryst, temp_ref, isothermal, reset_states, controls, h_conv, ht_mode, return_sens, state_events, method, scale, vol_tank, adiabatic, rad_zero, vol_ht, basis, jac_type, param_wrapper)
         self.is_continuous = True
         self.oper_mode = 'Continuous'
         self._Inlet = None
         self.vol_offset = 0.75
         self.num_interp_points = num_interp_points
-        self.mydistrib = np.zeros(500)
+        self.mydistrib = np.zeros(grid_size)
+        self.checker = progress_checker()
+        self.kin_array = {}
     @property
     def Inlet(self):
         return self._Inlet
@@ -1257,6 +1293,7 @@ class ReactiveMSMPR(_BaseReactiveCryst):
                           distrib, mass_conc, mole_conc, temp, temp_ht, vol, phi_in):
 
         rho_sol = rhos[0][1]
+        self.checker.check(time)
 
         input_flow = u_inputs['Inlet']['vol_flow']
 
@@ -1271,6 +1308,10 @@ class ReactiveMSMPR(_BaseReactiveCryst):
             input_distrib = u_inputs['Inlet']['distrib'] * self.scale
             ddistr_dt, transf = self.fvm_method(distrib, mu_n, mass_conc, temp,
                                                 params, rho_sol)
+            nuclp,sec, growth, dissol = self.CrystKinetics.get_kinetics(mass_conc, temp,
+                                                          self.Solid_1.kv, mu_n,nucl_sec_out=True)
+            self.kin_array[time] = [nuclp,sec,growth]
+
 
             self.Solid_1.moments[[2, 3]] = mu_n[[2, 3]]
         ## Reactive terms:
@@ -1312,7 +1353,7 @@ class ReactiveMSMPR(_BaseReactiveCryst):
             dcomp_dt *= 1 / rho_liq
 
         dmaterial_dt = np.concatenate((ddistr_dt, dcomp_dt))
-        self.mydistrib = np.append(self.mydistrib,self.mydistrib[-1]+ddistr_dt).reshape(-1,500)
+        self.mydistrib = np.append(self.mydistrib,self.mydistrib[-1]+ddistr_dt).reshape(-1,ddistr_dt.shape[0])
         return dmaterial_dt, transf
     def energy_balances(self, time,params, cryst_rate, u_inputs, rhos, mu_n,
                         distrib, mass_conc,mole_conc, temp, temp_ht, vol,
@@ -1381,26 +1422,13 @@ class ReactiveMSMPR(_BaseReactiveCryst):
         
     def retrieve_results(self, time, states):
         time = np.array(time)
-
+        self.checker = progress_checker()
         # ---------- Create result object
         inputs = self.get_inputs(time)
         volflow = inputs['Inlet']['vol_flow']
 
         dp = unpack_states(states, self.dim_states, self.name_states)
-        # TODO check if this can be changed to dp
-        ## ----begin old
-        # dp2 = complete_dict_states(time,dp,('vol','temp'),
-        #                            self.Liquid_1, self.controls)
-        # if 'temp_ht' in self.name_states:
-        #     heat_prof = self.energy_balances(**dp, u_inputs=inputs,
-        #                                     heat_prof=True)
-        # else:
-        #     heat_prof = self.energy_balances(temp_ht=None, **dp, u_inputs=inputs,
-        #                                     heat_prof=True)
-
-        # dp2['q_rxn'] = heat_prof[:,0]
-        # dp2['q_ht'] = heat_prof[:,1]
-        ### end old
+        
         dp['time'] = time
         dp['vol_flow'] = volflow
         dp['x_cryst'] = self.x_grid
@@ -1530,6 +1558,47 @@ class ReactiveMSMPR(_BaseReactiveCryst):
 
         # self.outputs = y_outputs
         self.Outlet.Phases = (liquid_out, solid_out)
+
+        # check that balances close
+        self.closure = np.zeros((len(dp['mass_conc']),3)) #mass vol
+        for i in range(len(dp['mass_conc'])):
+            liquid_out_close = LiquidStream(path,
+                                      mass_conc=dp['mass_conc'][i],
+                                      temp=dp['temp'][i], check_input=False)
+
+            solid_out_close = SolidStream(path, mass_frac=solid_comp)
+
+            if isinstance(inputs['Inlet']['vol_flow'], float):
+                vol_flow_close = inputs['Inlet']['vol_flow']
+            else:
+                vol_flow_close = inputs['Inlet']['vol_flow'][i]
+            
+            if isinstance(self.Inlet.mass_flow,float):
+                mass_in_close = self.Inlet.mass_flow
+            else:
+                mass_in_close = self.Inlet.mass_flow[i]
+            
+
+
+            
+            if self.method == '1D-FVM':
+                # check cstr for semibatch here
+                Outlet_close = SlurryStream(
+                    vol_flow=vol_flow_close,
+                    x_distrib=self.x_grid,
+                    distrib=dp['distrib'][i])
+
+            elif self.method == 'moments':
+
+                Outlet_close = SlurryStream(
+                    vol_flow=vol_flow,
+                    moments=dp['mu_n'][i])
+            Outlet_close.Phases = (liquid_out_close, solid_out_close)
+
+            # dmapi_liq__dt = self.Inlet['mass_conc'][self.target_ind]*vol_flow_close - dp['mass_conc'][self.target_ind]*vol_flow_close - 
+            mass_out =Outlet_close.Solid_1.mass*Outlet_close.Solid_1.mass_frac[self.target_ind]
+            self.closure[i] = np.array((Outlet_close.mass_flow/mass_in_close, Outlet_close.vol_flow/vol_flow_close, mass_out))
+            
 
     def get_heat_duty(self, time, states,n_components=3):
         q_heat = np.zeros((len(time), n_components))
