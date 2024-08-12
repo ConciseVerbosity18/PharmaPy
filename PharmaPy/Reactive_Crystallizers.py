@@ -29,12 +29,98 @@ import copy
 import string
 import numpy as np
 import os
+from time import time as timef
 
 eps = np.finfo(float).eps
 # gas_ct = 8.314  # J/mol/K
+from PharmaPy.Plotting import get_states_result,get_indexes,latexify_name,color_axis
 
+def plot_function2(uo, state_names, axes=None, fig_map=None, ylabels=None,
+                  include_units=True, **fig_kwargs):
+    time, data = get_states_result(uo.result, *state_names)
 
+    if fig_map is None:
+        fig_map = range(len(data))
 
+    if axes is None:
+        fig, ax_orig = plt.subplots(**fig_kwargs)
+    else:
+        ax_orig = axes
+
+    if isinstance(ax_orig, np.ndarray):
+        axes = ax_orig.flatten()
+    else:
+        axes = (ax_orig, )
+
+    count = 0
+    linestyles = ('-', '--', '-.', ':')
+    colors = plt.cm.tab10
+
+    names = list(data.keys())
+    states_and_fstates = {**uo.states_di, **uo.fstates_di}
+
+    for ind, idx in enumerate(fig_map):
+        name = names[ind]
+        y = data[name]
+        twin = False
+
+        # index_y = False
+        index_y = states_and_fstates[name].get('index', False)
+
+        if isinstance(state_names[ind], (tuple, list, range)):
+            y_ind = state_names[ind][1]
+            y_ind = get_indexes(index_y, y_ind)
+
+            index_y = [index_y[a] for a in y_ind]
+
+        if len(axes[idx].lines) > 0:
+            ax = axes[idx].twinx()
+            count += len(axes[idx].lines)
+            twin = True
+        else:
+            ax = axes[idx]
+
+        if y.ndim == 1:
+            y = y.reshape(-1, 1)
+
+        for sp, row in enumerate(y.T):
+            ax.plot(time, row, color=colors(count),
+                    linestyle=linestyles[count % len(linestyles)])
+
+            if twin:
+                color_axis(ax, colors(count))
+
+            count += 1
+
+        if ylabels is None:
+            ylabel = name
+        else:
+            ylabel = latexify_name(ylabels[ind])
+
+        units = states_and_fstates[name].get('units', '')
+        if len(units) > 0:
+            unit_name = latexify_name(states_and_fstates[name]['units'],
+                                      units=True)
+            ylabel = ylabel + ' (' + unit_name + ')'
+
+        if index_y:
+            ax.legend(index_y, loc='best')
+
+        ax.set_ylabel(ylabel)
+
+        count = 0
+
+    if len(axes) == 1:
+        axes = axes[0]
+
+    # for ax in axes:
+    #     if len(ax.lines) == 0:
+    #         ax.remove()
+
+    if 'fig' in locals():
+        return fig, ax_orig
+    else:
+        return ax_orig
 
 class progress_checker():
     def __init__(self,minh=.05, max_count = 300):
@@ -43,6 +129,7 @@ class progress_checker():
         self.old_time = 0
         self.counter = 0
         self.watch = 500
+        self.starttime = int(timef())
 
     def check(self,time):
         if time < self.old_time+self.minh:
@@ -51,11 +138,11 @@ class progress_checker():
             self.counter = 0
             self.old_time = time
         if self.counter % 25 == 0 and self.counter >0:
-            print('Sticking at time: ',time)
+            print('Sticking at time: ',time, int(timef())-self.starttime)
         # if self.counter > self.max_count:
         #     raise Exception('Stuck')
         if time> self.watch:
-            print(time)
+            print(time, int(timef())-self.starttime)
             self.watch += 500
         
 class extractor():
@@ -519,7 +606,9 @@ class _BaseReactiveCryst():
             'supersat': {'dim': 1, 'units': 'kg/m**3'},
             'solubility': {'dim': 1, 'units': 'kg/m**3'},
             'q_rxn': {'units': 'W', 'dim': 1},
-            'q_ht': {'units': 'W', 'dim': 1}
+            'q_ht': {'units': 'W', 'dim': 1},
+            'm_flow':{'units':'kg/s', 'dim':1},
+            'tot_mass_cryst': {'units':'kg','dim':1}
             }
 
         if 'temp' in self.controls:
@@ -1127,6 +1216,58 @@ class _BaseReactiveCryst():
 
         fig.text(0.5, 0, 'time (s)', ha='center')
         return fig,ax
+    
+    def plot_rxn_profiles2(self, pick_comp=None, **fig_kwargs):
+
+        """
+            Plot representative profiles for tank reactors. For a more flexible
+            plotting interface, see plot_function in th PharmaPy.Plotting module
+
+            Parameters
+            ----------
+            pick_comp : list of str/int, optional
+                list of components to be plotted. Each element of the list
+                can be either the name of a species (str) or the index of the
+                species (int). The default is None.
+            **fig_kwargs : keyword arguments to plt.subplots()
+                named arguments passed to the plotting functions. A yypical field
+                is 'figsize', passed as a (width, height) tuple.
+
+            Returns
+            -------
+            fig : TYPE
+                fig object.
+            ax : numpy array or array
+                ax object or array of objects.
+
+            """
+        if pick_comp is None:
+            states_plot = ('mole_conc','m_flow')#,'tot_mass_cryst')
+        else:
+            states_plot = (['mole_conc', pick_comp],'m_flow')#,'tot_mass_cryst')
+
+        figmap = (0,0)#,0)
+        ylabels = ('C_j',r'\dot{M}')#,'Totat Crystallized')
+
+        ncols = max(figmap) + 1
+
+        fig, ax = plot_function(self, states_plot, fig_map=figmap,
+                                ncols=ncols, ylabels=ylabels, **fig_kwargs)
+
+        
+        # ax.plot(self.result.time, self.closure[:,-1], '--', label='M_flow (kg/s)')
+
+        # ax.legend()
+
+        # for axis in ax:
+        #     axis.xaxis.set_minor_locator(AutoMinorLocator(2))
+        #     axis.yaxis.set_minor_locator(AutoMinorLocator(2))
+
+        fig.tight_layout()
+
+        fig.text(0.5, 0, 'time (s)', ha='center')
+        return fig,ax
+
     def plot_cryst_profiles(self, **fig_kwargs):
         """
 
@@ -1203,7 +1344,84 @@ class _BaseReactiveCryst():
 
         fig_mu.tight_layout()
         return fig_mu,ax_mu
-    
+    def plot_cryst_profiles2(self, **fig_kwargs):
+        """
+
+        Parameters
+        ----------
+        fig_kwargs : keyword arguments
+            keyword arguments to be passed to the plot.subplots() method
+
+        Returns
+        -------
+        fig : TYPE
+            DESCRIPTION.
+        ax : TYPE
+            DESCRIPTION.
+
+        """
+
+        def get_mu_labels(mu_idx, msmpr=False):
+            out = []
+            for idx in mu_idx:
+                name = '$\mu_{%i}$' % idx
+
+                if idx == 0:
+                    unit = '#'
+                elif idx == 1:
+                    unit = 'm'
+                else:
+                    unit = '$\mathrm{m^{%i}}$' % idx
+
+                if msmpr:
+                    unit += ' $\mathrm{m^{-3}}$'
+
+                unit = r' (%s)' % unit
+
+                out.append(name + unit)
+
+            return out
+
+        states = [('mu_n', (0, )), 'temp', ('mass_conc', (self.target_ind,)),
+                  'supersat']
+
+        figmap = [0, 4, 5, 5]
+        ylabels = ['mu_0', 'T', 'C_j', 'sigma']
+
+        if hasattr(self.result, 'temp_ht'):
+            states.append('temp_ht')
+            figmap.append(4)
+            ylabels.append('T_{ht}')
+
+        fig_mu, ax_mu = plot_function(self, states, fig_map=figmap,
+                                nrows=3, ncols=2, ylabels=ylabels,
+                                **fig_kwargs)
+
+        ax_mu[0, 0].legend().remove()
+
+        time = self.result.time
+        moms = self.result.mu_n
+        for i,mu_i in enumerate(moms.T):
+            if i == 0:continue
+            moms[:,i] = mu_i/moms.T[0]*(1e6)**i
+        is_msmpr = self.__class__.__name__ == 'MSMPR'
+        labels_moms = ['$\mu_0$ (#)',r'$\frac{\mu_1}{\mu_0}(\frac{\mu m}{crystal})$', r'$\frac{\mu_2}{\mu_0} (\frac{\mu m^2}{crystal})$',r'$\frac{\mu_3}{\mu_0} (\frac{\mu m^3}{crystal})$']
+
+        for ind, row in enumerate(moms[:, 1:].T):
+            ax_mu.flatten()[ind + 1].plot(time, row)
+
+        for ind, lab in enumerate(labels_moms):
+            ax_mu.flatten()[ind].set_ylabel(lab)
+
+        # Solubility
+        ax_mu[2, 1].plot(time, self.result.solubility)
+        ax_mu[2, 1].lines[1].set_color('k')
+        ax_mu[2, 1].lines[1].set_alpha(0.4)
+
+        ax_mu[2, 1].legend([self.target_comp[0], 'solubility'])
+
+        fig_mu.tight_layout()
+        return fig_mu,ax_mu
     def plot_profiles(self,pick_comp=None,directory = None,fig_kwargs={},show=True):
         fig_rxn,ax_rxn = self.plot_rxn_profiles(pick_comp,**fig_kwargs)
         if directory is not None:
@@ -1213,6 +1431,23 @@ class _BaseReactiveCryst():
         else:
             plt.close()
         fig_mu,ax_mu = self.plot_cryst_profiles(**fig_kwargs)
+        if directory is not None:
+            fig_mu.savefig(os.path.join(directory,'moments.png'),dpi=600)
+        if show:
+            plt.show()
+        else:
+            plt.close()        
+        return ((fig_rxn,ax_rxn),(fig_mu,ax_mu))
+
+    def plot_profiles2(self, pick_comp=None, directory = None,fig_kwargs={},show=True):
+        fig_rxn,ax_rxn = self.plot_rxn_profiles2(pick_comp,**fig_kwargs)
+        if directory is not None:
+            fig_rxn.savefig(os.path.join(directory,'rxn_profiles.png'),dpi=600)
+        if show:
+            plt.show()
+        else:
+            plt.close()
+        fig_mu,ax_mu = self.plot_cryst_profiles2(**fig_kwargs)
         if directory is not None:
             fig_mu.savefig(os.path.join(directory,'moments.png'),dpi=600)
         if show:
@@ -1299,18 +1534,23 @@ class ReactiveMSMPR(_BaseReactiveCryst):
 
         input_conc = u_inputs['Liquid_1']['mass_conc']
         # input_mole = u_inputs['Inlet']['mole_conc']
-
+        
         if self.method == 'moments':
             input_distrib = u_inputs['Inlet']['mu_n'] * (1e6)**np.arange(self.num_distr)#* self.scale
             ddistr_dt, transf = self.method_of_moments(distrib, mass_conc, temp,
                                                        params, rho_sol)
         elif self.method == '1D-FVM':
             input_distrib = u_inputs['Inlet']['distrib'] * self.scale
-            ddistr_dt, transf = self.fvm_method(distrib, mu_n, mass_conc, temp,
-                                                params, rho_sol)
-            nuclp,sec, growth, dissol = self.CrystKinetics.get_kinetics(mass_conc, temp,
-                                                          self.Solid_1.kv, mu_n,nucl_sec_out=True)
-            self.kin_array[time] = [nuclp,sec,growth]
+            if True:#time < 5200:
+                ddistr_dt, transf = self.fvm_method(distrib, mu_n, mass_conc, temp,
+                                                    params, rho_sol)
+                nuclp,sec, growth, dissol = self.CrystKinetics.get_kinetics(mass_conc, temp,
+                                                            self.Solid_1.kv, mu_n,nucl_sec_out=True)
+                # self.oldparams = nuclp,sec,growth,dissol,ddistr_dt,transf
+            else:
+                nuclp,sec,growth,dissol,ddistr_dt,transf = self.oldparams
+            self.kin_array[time] = [nuclp,sec,growth,float(transf)]
+            
 
 
             self.Solid_1.moments[[2, 3]] = mu_n[[2, 3]]
@@ -1470,8 +1710,8 @@ class ReactiveMSMPR(_BaseReactiveCryst):
         dp['q_ht'] = self.rxn_heat_prof[:,1]
 
         self.outputs = dp
+        
 
-        self.result = DynamicResult(self.states_di, self.fstates_di, **dp)
 
         # ---------- Update phases
 
@@ -1596,9 +1836,16 @@ class ReactiveMSMPR(_BaseReactiveCryst):
             Outlet_close.Phases = (liquid_out_close, solid_out_close)
 
             # dmapi_liq__dt = self.Inlet['mass_conc'][self.target_ind]*vol_flow_close - dp['mass_conc'][self.target_ind]*vol_flow_close - 
-            mass_out =Outlet_close.Solid_1.mass*Outlet_close.Solid_1.mass_frac[self.target_ind]
+            mass_out = self.kin_array[time[i]][-1]#Outlet_close.Solid_1.mass*Outlet_close.Solid_1.mass_frac[self.target_ind]
             self.closure[i] = np.array((Outlet_close.mass_flow/mass_in_close, Outlet_close.vol_flow/vol_flow_close, mass_out))
-            
+
+        tot_mass = [sum(self.closure[:i,-1]) for i in range(len(self.closure))]
+        dp['m_flow'] = self.closure[:,-1]
+        dp['tot_mass_cryst'] = np.array(tot_mass)
+
+        self.result = DynamicResult(self.states_di, self.fstates_di, **dp) # this was on line1704
+
+
 
     def get_heat_duty(self, time, states,n_components=3):
         q_heat = np.zeros((len(time), n_components))
