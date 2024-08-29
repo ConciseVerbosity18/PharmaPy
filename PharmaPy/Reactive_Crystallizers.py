@@ -1,6 +1,6 @@
 from assimulo.solvers import CVode
 from assimulo.problem import Explicit_Problem
-
+import pickle
 from PharmaPy.Phases import classify_phases
 from PharmaPy.Streams import LiquidStream, SolidStream
 from PharmaPy.MixedPhases import Slurry, SlurryStream
@@ -30,6 +30,9 @@ import string
 import numpy as np
 import os
 from time import time as timef
+
+class StuckException(Exception):
+    pass
 
 eps = np.finfo(float).eps
 # gas_ct = 8.314  # J/mol/K
@@ -123,13 +126,15 @@ def plot_function2(uo, state_names, axes=None, fig_map=None, ylabels=None,
         return ax_orig
 
 class progress_checker():
-    def __init__(self,minh=.05, max_count = 300):
+    def __init__(self,minh=1, max_count = 100, flag=''):
         self.minh = minh
         self.max_count = max_count
         self.old_time = 0
         self.counter = 0
         self.watch = 500
         self.starttime = int(timef())
+        self.crit_count = 0
+        self.flag = flag
 
     def check(self,time):
         if time < self.old_time+self.minh:
@@ -137,12 +142,20 @@ class progress_checker():
         else:
             self.counter = 0
             self.old_time = time
-        if self.counter % 25 == 0 and self.counter >0:
-            print('Sticking at time: ',time, int(timef())-self.starttime)
-        # if self.counter > self.max_count:
-        #     raise Exception('Stuck')
+        if self.counter % 100 == 0 and self.counter >10:
+            print(f'{self.flag} Sticking at time: ',round(time,2), 'Total Time:',int(timef())-self.starttime, 'Count:', self.counter)
+        if int(timef())-self.starttime > 30:
+            if (self.counter > self.max_count) or (int(timef())-self.starttime > 1.25*time):
+                print(self.flag, round(time,2), int(timef())-self.starttime, 'STUCK, Escaping')
+                payload=f'{time},{int(timef())-self.starttime},{self.counter}'
+                if not os.path.exists('Fail.notez'):
+                    with open(f'Fail.notez', 'w') as note:
+                        note.write(payload)
+                    
+                    print('written',os.getcwd())
+                raise StuckException
         if time> self.watch:
-            print(time, int(timef())-self.starttime)
+            print(self.flag, round(time,2), int(timef())-self.starttime)
             self.watch += 500
         
 class extractor():
@@ -1499,7 +1512,7 @@ class ReactiveMSMPR(_BaseReactiveCryst):
         self.vol_offset = 0.75
         self.num_interp_points = num_interp_points
         self.mydistrib = np.zeros(grid_size)
-        self.checker = progress_checker()
+        self.checker = progress_checker(flag='Solver')
         self.kin_array = {}
     @property
     def Inlet(self):
@@ -1594,6 +1607,7 @@ class ReactiveMSMPR(_BaseReactiveCryst):
 
         dmaterial_dt = np.concatenate((ddistr_dt, dcomp_dt))
         self.mydistrib = np.append(self.mydistrib,self.mydistrib[-1]+ddistr_dt).reshape(-1,ddistr_dt.shape[0])
+        # self.mass_flow_out = self.Solid_1.mass_flow
         return dmaterial_dt, transf
     def energy_balances(self, time,params, cryst_rate, u_inputs, rhos, mu_n,
                         distrib, mass_conc,mole_conc, temp, temp_ht, vol,
@@ -1662,7 +1676,7 @@ class ReactiveMSMPR(_BaseReactiveCryst):
         
     def retrieve_results(self, time, states):
         time = np.array(time)
-        self.checker = progress_checker()
+        self.checker = progress_checker(max_count=30000, flag='retrieve')
         # ---------- Create result object
         inputs = self.get_inputs(time)
         volflow = inputs['Inlet']['vol_flow']
@@ -1836,12 +1850,13 @@ class ReactiveMSMPR(_BaseReactiveCryst):
             Outlet_close.Phases = (liquid_out_close, solid_out_close)
 
             # dmapi_liq__dt = self.Inlet['mass_conc'][self.target_ind]*vol_flow_close - dp['mass_conc'][self.target_ind]*vol_flow_close - 
-            mass_out = self.kin_array[time[i]][-1]#Outlet_close.Solid_1.mass*Outlet_close.Solid_1.mass_frac[self.target_ind]
+            mass_out = Outlet_close.Solid_1.mass_flow#self.kin_array[time[i]][-1]#Outlet_close.Solid_1.mass*Outlet_close.Solid_1.mass_frac[self.target_ind]
             self.closure[i] = np.array((Outlet_close.mass_flow/mass_in_close, Outlet_close.vol_flow/vol_flow_close, mass_out))
 
         tot_mass = [sum(self.closure[:i,-1]) for i in range(len(self.closure))]
         dp['m_flow'] = self.closure[:,-1]
         dp['tot_mass_cryst'] = np.array(tot_mass)
+        dp['tot_mass_2'] = dp['mu_n'][:,3]*self.Solid_1.kv*vol_flow_close*self.Solid_1.getDensity() # add to fstates
 
         self.result = DynamicResult(self.states_di, self.fstates_di, **dp) # this was on line1704
 
