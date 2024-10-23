@@ -126,7 +126,7 @@ def plot_function2(uo, state_names, axes=None, fig_map=None, ylabels=None,
         return ax_orig
 
 class progress_checker():
-    def __init__(self,minh=1, max_count = 100, flag=''):
+    def __init__(self,minh=1, max_count = 10000, flag=''):
         self.minh = minh
         self.max_count = max_count
         self.old_time = 0
@@ -145,7 +145,7 @@ class progress_checker():
         if self.counter % 100 == 0 and self.counter >10:
             print(f'{self.flag} Sticking at time: ',round(time,2), 'Total Time:',int(timef())-self.starttime, 'Count:', self.counter)
         if int(timef())-self.starttime > 30:
-            if (self.counter > self.max_count) or (int(timef())-self.starttime > 1.25*time):
+            if (self.counter > self.max_count):# or (int(timef())-self.starttime > 1.25*time):
                 print(self.flag, round(time,2), int(timef())-self.starttime, 'STUCK, Escaping')
                 payload=f'{time},{int(timef())-self.starttime},{self.counter}'
                 if not os.path.exists('Fail.notez'):
@@ -1275,7 +1275,7 @@ class _BaseReactiveCryst():
         # for axis in ax:
         #     axis.xaxis.set_minor_locator(AutoMinorLocator(2))
         #     axis.yaxis.set_minor_locator(AutoMinorLocator(2))
-
+        
         fig.tight_layout()
 
         fig.text(0.5, 0, 'time (s)', ha='center')
