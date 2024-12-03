@@ -977,4 +977,8 @@ class CrystKinetics:
 
         return dbp_dpar, dbs_dpar, dgr_dpar, ddiss_dpar, conc_sat
 
+class MultiCrystKinetics:
+    def __init__(self, values) -> None:
+        self.kins = values
+        
 

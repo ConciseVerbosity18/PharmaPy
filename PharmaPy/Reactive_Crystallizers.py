@@ -161,12 +161,31 @@ class progress_checker():
 class extractor():
     def __init__(self):
         pass
+
+def create_kinetics_property(name):
+    private_name = f"_{name}"
+
+    @property
+    def prop(self):
+        return getattr(self, private_name, None)
+
+    @prop.setter
+    def prop(self, value):
+        number = int(name[-1])-1
+        assert number>0, 'Convention for the seond kinetics to be named kinetics2 and so forth'
+        assert number<=len(list(self.target_comp)), 'Cannot have more kinetics than target comps'
+        self.__set_attr__(private_name, value)
+        self._CrystKineticsList[number]= self._CrystKinetics
+        self._set_MultiCrystKinetics()
+
+    return prop
+
 class _BaseReactiveCryst():
     def __init__(self,target_comp, mask_params_rxn,mask_params_cryst, temp_ref,
      isothermal, reset_states, controls, h_conv, ht_mode,
       return_sens, state_events,method,scale,
       vol_tank,adiabatic,rad_zero,vol_ht,basis,jac_type,
-      param_wrapper):
+      param_wrapper,multicryst=False):
         """ Construct a Reactive Crystallizer Object
 
     Parameters
@@ -235,7 +254,7 @@ class _BaseReactiveCryst():
         self.basis = basis
         self.adiabatic = adiabatic
         self.jac_type = jac_type
-
+        self.multi_cryst = multicryst
         if isinstance(target_comp, str):
             target_comp = [target_comp]
 
@@ -301,7 +320,16 @@ class _BaseReactiveCryst():
         self.outputs = None
         # Building objects
         self._CrystKinetics = None
-        self._Utility = None
+        if self.multi_cryst:
+            for i in range(1,len(self.target_comp)):
+                name = f'CrystKinetics{i+1}'
+                # create_kinetics_property(name)
+                self.__setattr__(f'CrystKinetics{i+1}',create_kinetics_property(name))
+
+
+            self._CrystKineticsList = [self._CrystKinetics, *[getattr(self,f'_CrystKinetics{i+1}',None) for i in range(1,len(self.target_comp))]]
+        else:
+            self._CrystKineticsList = [self._CrystKinetics]
         self.material_from_upstream = False
         #------------from reactor
         self.distributed_uo = False
@@ -460,7 +488,7 @@ class _BaseReactiveCryst():
     @CrystKinetics.setter
     def CrystKinetics(self, instance):
         self._CrystKinetics = instance
-
+        self._CrystKineticsList[0]= self._CrystKinetics
         name_params = self._CrystKinetics.name_params
         if self.mask_params_cryst is None:
             self.mask_params_cryst = [True] * self._CrystKinetics.num_params
@@ -471,6 +499,15 @@ class _BaseReactiveCryst():
                                 if self.mask_params_cryst[ind]]
 
         self.mask_params_cryst = np.array(self.mask_params_cryst)
+        self._set_MultiCrystKinetics()
+
+    def _set_MultiCrystKinetics(self):
+        
+        if not self.multi_cryst:return
+        self.mytest = 6
+        name_params = [self.name_params,*[getattr(self,f'_CrystKinetics{i}').name_params for i in range(1,len(self.target_comp))]]
+        # TODO finis this based on crystkinetics above
+        # TODO mask_params_cryst would increase a dimension to compensate, decide to change this or create mask_params_multicryst
 
     @property
     def RxnKinetics(self):
@@ -1886,3 +1923,13 @@ class ReactiveMSMPR(_BaseReactiveCryst):
 
 class SemibatchRC(_BaseReactiveCryst):
     pass
+
+
+if __name__ == '__main__':
+    test = _BaseReactiveCryst([0,1], mask_params_rxn=None,mask_params_cryst=None, temp_ref=298.15, isothermal=True,
+                  reset_states=False, controls=None, h_conv=1000, ht_mode='jacket',
+                  return_sens=True, state_events=None, method='1D-FVM',
+                  scale=1, vol_tank=None, adiabatic=False, rad_zero=0, vol_ht=None,
+                  basis='mass_conc', jac_type=None, param_wrapper=None, multicryst=True)
+    test.CrystKinetics2 = 6
+    print(test.CrystKinetics2)
