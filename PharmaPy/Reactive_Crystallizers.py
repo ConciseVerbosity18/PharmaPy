@@ -705,7 +705,7 @@ class _BaseReactiveCryst():
 
         return inputs
     
-    def method_of_moments(self, mu, conc, temp, params, rho_cry, vol=1):
+    def method_of_moments(self, which, mu, conc, temp, params, rho_cry, vol=1):
         kv = self.Solid_1.kv # shape factor
 
         # Kinetics
@@ -717,10 +717,10 @@ class _BaseReactiveCryst():
 
         # Kinetic terms
         mu_susp = mu*(1e-6)**np.arange(self.num_distr) / vol  # m**n/m**3_susp
-        nucl, growth, dissol = self.CrystKinetics.get_kinetics(comp_kin, temp, kv,
+        nucl, growth, dissol = self._CrystKineticsList[which].get_kinetics(comp_kin, temp, kv,
                                                           mu_susp)
 
-        growth = growth * self.CrystKinetics.alpha_fn(conc)
+        growth = growth * self._CrystKineticsList[which].alpha_fn(conc)
 
         ind_mom = np.arange(1, len(mu))
 
@@ -736,7 +736,7 @@ class _BaseReactiveCryst():
 
         return dmu_dt, mass_transf
 
-    def fvm_method(self, csd, moms, conc, temp, params, rho_cry,
+    def fvm_method(self, which,csd, moms, conc, temp, params, rho_cry,
                    output='dstates', vol=1):
 
         mu_2 = moms[2]
@@ -750,7 +750,7 @@ class _BaseReactiveCryst():
         else:
             comp_kin = conc
 
-        nucl, growth, dissol = self.CrystKinetics.get_kinetics(comp_kin, temp,
+        nucl, growth, dissol = self._CrystKineticsList[which].get_kinetics(comp_kin, temp,
                                                           kv_cry, moms)
 
         nucl = nucl * self.scale * vol
@@ -811,6 +811,9 @@ class _BaseReactiveCryst():
         self.Liquid_1.updatePhase(mole_conc=di_states['mole_conc'])
         self.Liquid_1.temp = di_states['temp']
         self.Solid_1.temp = di_states['temp']
+        for i,solid in enumerate(self._SolidsList): #TODO make solidsList in init
+            if i ==0: continue
+            setattr(solid,'temp',di_states['temp'])
 
         rhos_susp = self.Slurry.getDensity(temp=di_states['temp'])
 
