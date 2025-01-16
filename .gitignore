@@ -11,7 +11,6 @@ target/
 *.python-version
 *.pyc
 *.egg-info
-
 # celery beat schedule file
 celerybeat-schedule
 
