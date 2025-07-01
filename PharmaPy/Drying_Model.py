@@ -625,6 +625,7 @@ class Drying:
         self.result = DynamicResult(self.states_di, self.fstates_di, **dp)
 
         self.CakePhase.z_external = self.z_centers
+        
 
     def flatten_states(self):
         pass

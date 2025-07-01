@@ -75,7 +75,7 @@ def get_alpha(solid_phase, porosity, sphericity, rho_sol, csd=None):
     rho_sol = solid_phase.getDensity()
     x_grid = solid_phase.x_distrib * 1e-6
 
-    kv = 0.524  # converting number based CSD to volume based:
+    kv = 0.524  # converting number based CSD to volume based: hard coded
 
     del_x_dist = np.diff(x_grid)
     node_x_dist = (x_grid[:-1] + x_grid[1:]) / 2
@@ -99,7 +99,7 @@ def get_alpha(solid_phase, porosity, sphericity, rho_sol, csd=None):
 def get_sat_inf(x_vec, csd, deltaP, porosity, height, mu_zero, props):
     surf_tens, rho_liq = props
 
-    kv = 0.524  # converting number based CSD to volume based:
+    kv = 0.524  # converting number based CSD to volume based: hard coded
 
     del_x_dist = np.diff(x_vec)
     node_x_dist = (x_vec[:-1] + x_vec[1:]) / 2
@@ -120,7 +120,7 @@ def get_sat_inf(x_vec, csd, deltaP, porosity, height, mu_zero, props):
 
     csd = vol_cry
 
-    s_inf = 0.155 * (1 + 0.031*capillary_number**(-0.49))
+    s_inf = 0.155 * (1 + 0.031*capillary_number**(-0.49)) #hard coded
     s_inf = np.where(s_inf > 1, 1, s_inf)
 
     # Calculate irreducible saturation in weighted csd (volume based)

@@ -322,12 +322,12 @@ class _BaseReactiveCryst():
         self._CrystKinetics = None
         if self.multi_cryst:
             for i in range(1,len(self.target_comp)):
-                name = f'CrystKinetics{i+1}'
+                name = f'CrystKinetics_{i+1}'
                 # create_kinetics_property(name)
-                self.__setattr__(f'CrystKinetics{i+1}',create_kinetics_property(name))
+                self.__setattr__(name,create_kinetics_property(name))
 
 
-            self._CrystKineticsList = [self._CrystKinetics, *[getattr(self,f'_CrystKinetics{i+1}',None) for i in range(1,len(self.target_comp))]]
+            self._CrystKineticsList = [self._CrystKinetics, *[getattr(self,f'_CrystKinetics_{i+1}',None) for i in range(1,len(self.target_comp))]]
         else:
             self._CrystKineticsList = [self._CrystKinetics]
         self.material_from_upstream = False
@@ -438,35 +438,46 @@ class _BaseReactiveCryst():
             self.name_species = self.Liquid_1.name_species
             self.num_species = len(self.name_species)
             # Input defaults
-            self.input_defaults = {
-                'distrib': np.zeros_like(self.Solid_1.distrib)}
-
+            if not self.multi_cryst:
+                self.input_defaults = {
+                    'distrib': np.zeros_like(self.Solid_1.distrib)}
+            else: # TODO check if should be column instead of row
+                self.input_defaults = {
+                    'distrib':np.zeros(len(self._CrystKineticsList),len(self.Solid_1.distrib))
+                }
             name_bool = [name in self.target_comp for name in self.name_species]
-            self.target_ind = np.where(name_bool)[0][0]
+            self.target_ind = np.where(name_bool)[0][0] if not self.multi_cryst else np.where(name_bool)[0] # $
 
             # Save safe copy of original phases
             # TODO needs deep copy all phases for reset()
-            self.__original_phase__ = [copy.deepcopy(self.Liquid_1),
-                                       copy.deepcopy(self.Solid_1)]
-
-            self.__original_phase__ = copy.deepcopy(self.Slurry)
+            if not self.multi_cryst:
+                self.__original_phase__ = [copy.deepcopy(self.Liquid_1),
+                                        copy.deepcopy(self.Solid_1)]
+            else:
+                    self.__original_phase__ = [copy.deepcopy(phase) for phase in self.Phases] # $
+            self.__original_phase__ = copy.deepcopy(self.Slurry) # TODO determine if redundant $
 
             self.kron_jtg = np.zeros_like(self.Liquid_1.mass_frac) # this assumes Liquid_1 is the mother liquor
-            self.kron_jtg[self.target_ind] = 1
+            self.kron_jtg[self.target_ind] = 1 # should generalize to multiple $
 
             # ---------- Names
             # Moments
             # assumes solid 1 is target solid
             if self.method == 'moments':
-                name_mom = [r'\mu_{}'.format(ind) for ind
-                            in range(self.Solid_1.num_mom)]
-                name_mom.append('C')
+                if not self.multi_cryst:
+                    name_mom = [r'\mu_{}'.format(ind) for ind
+                                in range(self.Solid_1.num_mom)]
+                    name_mom.append('C')
 
-                self.num_distr = len(self.Solid_1.moments)
+                    self.num_distr = len(self.Solid_1.moments)
+                else: # $
+                    self.num_distr = len(self.Solid_1.moments)
+                    self.num_distr_list = [len(getattr(self,f'Solid_{i}').moments) for i in range(1,len(self.target_comp)+1)]
+
 
             else:
                 self.num_distr = len(self.Solid_1.distrib)
-
+                self.num_distr_list = [len(getattr(self,f'Solid_{i}').num_mom) for i in range(1,len(self.target_comp)+1)]
             # Species
             if self.name_species is None:
                 num_sp = len(self.Liquid_1.mass_frac)
@@ -477,9 +488,7 @@ class _BaseReactiveCryst():
                 'Inlet': {'vol_flow': 1, 'temp': 1,'mole_conc': len(self.Liquid_1.name_species)}}
 
             self.nomenclature() 
-            # TODO write nomenclature or set_names
-            # TODO check if fine or need add support for other liquids present
-            # TODO else fine
+            # TODO check if sufficiently supports multi solid
     
     @property
     def CrystKinetics(self):
@@ -491,6 +500,7 @@ class _BaseReactiveCryst():
         self._CrystKineticsList[0]= self._CrystKinetics
         name_params = self._CrystKinetics.name_params
         if self.mask_params_cryst is None:
+            wasNone = True
             self.mask_params_cryst = [True] * self._CrystKinetics.num_params
             self.name_params_cryst = name_params
 
@@ -499,13 +509,36 @@ class _BaseReactiveCryst():
                                 if self.mask_params_cryst[ind]]
 
         self.mask_params_cryst = np.array(self.mask_params_cryst)
-        self._set_MultiCrystKinetics()
+        if self.multi_cryst:
+            self._set_MultiCrystKinetics(wasNone)
 
-    def _set_MultiCrystKinetics(self):
+    def _set_MultiCrystKinetics(self,wasNone): #$
         
-        if not self.multi_cryst:return
-        self.mytest = 6
+        
         name_params = [self.name_params,*[getattr(self,f'_CrystKinetics{i}').name_params for i in range(1,len(self.target_comp))]]
+        
+        
+        
+        if wasNone:
+            # determine len(num_params) for each _crystKin
+            # make array of shape (n_crystKin,max_len_num_params) initialize True
+            # change to false for those that are not filled for a crystKin
+            # Assumes that setting false to the ending entries properly addresses length discrepancies
+            self.multi_name_params = name_params
+            lengths = [len(getattr(self,f'_CrystKinetics{i}').num_params) for i in range(1,len(self.target_comp))]
+            max_length = max(lengths)
+            self.mask_params_multicryst = np.ones((len(lengths), max_length)).astype(bool)
+            for i, l in enumerate(lengths):
+                if l<max_length:
+                    number = max_length-l
+                    self.mask_params_multicryst[i,-number: ] = False
+                    #find number different, then set all mask_params_cryst[i,-number:] = False
+        else:
+            self.multi_name_params = []
+            for i, param in enumerate(name_params):
+                self.multi_name_params.append([name for ind,name in enumerate(param) if self.mask_params_multicryst[i][ind]])
+        self.mask_params_multicryst = np.array(self.mask_params_multicryst)
+
         # TODO finis this based on crystkinetics above
         # TODO mask_params_cryst would increase a dimension to compensate, decide to change this or create mask_params_multicryst
 
@@ -573,10 +606,15 @@ class _BaseReactiveCryst():
        
         states_di = {
             }
-
-        di_distr = {'dim': self.num_distr,
-                    'index': list(range(self.num_distr)), 'type': 'diff',
-                    'depends_on': ['time', 'x_cryst']}
+        if not self.multi_cryst:
+            di_distr = {'dim': self.num_distr,
+                        'index': list(range(self.num_distr)), 'type': 'diff',
+                        'depends_on': ['time', 'x_cryst']}
+        else: # $
+            di_distr = {'dim':self.num_distr_list,
+                        'index': [list(range(self.num_distr_list[i])) for i in range(len(self.num_distr_list))],
+                        'type':'diff',
+                        'depends_on': ['time','x_cryst']} # maybe ['time','x_cryst', *[f'x_cryst{i+1}' for i in range(1,len(self.num_distr_list))]
 
         if 'batch' not in name_class.lower() and 'semi' not in name_class.lower(): #batch reactive cryst
             self.names_states_in += ['vol_flow', 'temp']
@@ -585,6 +623,11 @@ class _BaseReactiveCryst():
                 self.states_in_dict['Inlet']['mu_n'] = self.num_distr
             else:
                 self.states_in_dict['Inlet']['distrib'] = self.num_distr
+            if self.multi_cryst: #$
+                if self.method == 'moments':
+                    self.states_in_dict['Inlet']['mu'] = self.num_distr_list
+                else:
+                    self.states_in_dict['Inlet']['distrib'] = self.num_distr_list
 
         if self.method == 'moments':
             # mom_names = ['mu_%s0' % ind for ind in range(self.num_mom)]
@@ -646,10 +689,11 @@ class _BaseReactiveCryst():
                                     'depends_on': ['time']}
 
         self.states_in_phaseid = {'mass_conc': 'Liquid_1'}
+        # change above if multi-liquid phase
         self.names_states_out = self.names_states_in
 
         self.states_di = states_di
-        self.dim_states = [di['dim'] for di in self.states_di.values()]
+        self.dim_states = [di['dim'] for di in self.states_di.values()] #check here if works with  multicryst $
         self.name_states = list(self.states_di.keys())
 
         self.fstates_di = {
@@ -660,13 +704,25 @@ class _BaseReactiveCryst():
             'm_flow':{'units':'kg/s', 'dim':1},
             'tot_mass_cryst': {'units':'kg','dim':1}
             }
-
+        #$
+        if self.multi_cryst:
+            self.fstates_di = {
+                'supersat': {'dim': len(self.target_comp), 'units': 'kg/m**3'},
+                'solubility': {'dim': len(self.target_comp), 'units': 'kg/m**3'},
+                'q_rxn': {'units': 'W', 'dim': 1},
+                'q_ht': {'units': 'W', 'dim': 1},
+                'm_flow':{'units':'kg/s', 'dim':1},
+                'tot_mass_cryst': {'units':'kg','dim':len(self.target_comp)}
+            }
         if 'temp' in self.controls:
             self.fstates_di['temp'] = {'dim': 1, 'units': 'K'}
 
         if self.method != 'moments':
             self.fstates_di['mu_n'] = {'dim': 4, 'index': list(range(4)),
                                        'units': 'm**n'}
+            if self.multi_cryst:
+                pass
+                #fix 'mu_n' entry to agree with dimensinoality (ntargetComps x 4)
 
             self.fstates_di['vol_distrib'] = {
                 'dim': self.num_distr,
